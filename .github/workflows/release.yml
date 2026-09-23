@@ -25,8 +25,6 @@ jobs:
         with:
           version: v2.18.1
           args: release --clean
-          docker_username: ${{ github.actor }}
-          docker_password: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_PERSONAL_AUTH_TOKEN: ${{ secrets.TAP_GORELEASER_TOKEN }}
