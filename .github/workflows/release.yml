@@ -64,14 +64,21 @@ jobs:
 
           Write-Host "Extension version set to $version"
 
+      - name: Restore VSIX project
+        shell: pwsh
+        run: >
+          msbuild extension\format\format.csproj
+          /t:Restore
+          /p:Configuration=Release
+          /p:Platform=AnyCPU
+
       - name: Build VSIX
         shell: pwsh
         run: >
           msbuild extension\format\format.csproj
-          /t:Restore,Build
+          /t:Build
           /p:Configuration=Release
           /p:Platform=AnyCPU
-          /p:VisualStudioVersion=17.0
           /p:ReferencePath="$env:GITHUB_WORKSPACE\extension\format\References"
           /p:DeployExtension=false
           /p:BuildVSIXContainer=true
