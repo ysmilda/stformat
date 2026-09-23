@@ -64,15 +64,11 @@ jobs:
 
           Write-Host "Extension version set to $version"
 
-      - name: Restore packages
-        shell: pwsh
-        run: msbuild extension\format\format.csproj /t:Restore /p:Configuration=Release
-
       - name: Build VSIX
         shell: pwsh
         run: >
           msbuild extension\format\format.csproj
-          /t:Build
+          /t:Restore,Build
           /p:Configuration=Release
           /p:Platform=AnyCPU
           /p:VisualStudioVersion=17.0
