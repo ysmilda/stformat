@@ -1,0 +1,31 @@
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Foo" Id="{b}">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Foo
+VAR_INPUT
+	x : INT;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF x < 5 THEN
+	x := x + 1;
+END_IF]]></ST>
+    </Implementation>
+    <Method Name="m" Id="{c}">
+      <Declaration><![CDATA[METHOD PRIVATE m : DINT
+VAR_INPUT
+	r : REFERENCE TO INT;
+END_VAR
+VAR
+	n : DINT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[n := 0;
+// count
+WHILE r^ > 0 DO
+	n := n + 1;
+	r^ := r^ - 1;
+END_WHILE
+	m := n;]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

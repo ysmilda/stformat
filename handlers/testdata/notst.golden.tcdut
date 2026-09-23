@@ -1,0 +1,5 @@
+<TcPlcObject>
+  <DUT Name="X" Id="{x}">
+    <Declaration><![CDATA[not-CDATA]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -1,0 +1,34 @@
+PROGRAM p
+VAR_INST
+	fbInner : fb_motor;
+END_VAR
+
+VAR_STAT
+	callCount : INT;
+END_VAR
+
+VAR_EXTERNAL
+	shared : INT;
+END_VAR
+
+VAR_CONFIG
+	inst.address : BOOL AT %i*;
+END_VAR
+
+VAR_ACCESS
+	nCount  : gvl.nCount : DINT READ_WRITE;
+	sSecret : gvl.sSecret : STRING READ_ONLY;
+END_VAR
+
+VAR_GLOBAL NON_RETAIN
+	cfg : INT;
+END_VAR
+
+VAR CONSTANT
+	kPi : REAL := 3.14159;
+END_VAR
+
+VAR PERSISTENT
+	bootCount : DINT;
+END_VAR
+END_PROGRAM

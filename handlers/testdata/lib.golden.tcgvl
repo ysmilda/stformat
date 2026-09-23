@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <GVL Name="GParams" Id="{g}">
+    <Declaration><![CDATA[
+{attribute 'qualified_only'}
+{attribute 'hide'}
+VAR_GLOBAL CONSTANT
+	kMaxCount : UDINT := 100;
+	kName     : STRING := 'app';
+END_VAR
+]]></Declaration>
+  </GVL>
+</TcPlcObject>

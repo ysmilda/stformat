@@ -1,0 +1,14 @@
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="P" Id="{b}">
+    <Implementation>
+      <ST><![CDATA[
+cmd.FB_Build(
+	rDoExtending := rDoExtending,
+	rDoRetracting := rDoRetracting,
+	rDiAtExtendedPosition := rDiAtExtendedPosition,
+	commandTimeout := T#5S
+);
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

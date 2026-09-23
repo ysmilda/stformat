@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.11">
+  <DUT Name="S" Id="{94a2e7fb-c175-4cbd-83ff-a3d68aa2ad11}">
+    <Declaration><![CDATA[
+{attribute 'qualified_only'}
+
+TYPE S :
+	(A := 10, B := 20);
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -1,0 +1,9 @@
+/dist/
+/stformat
+/stformat.exe
+
+extension/**/bin
+extension/**/obj
+extension/**/Resources/stformat.exe
+
+.vs
