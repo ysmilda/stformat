@@ -24,15 +24,8 @@ Supported formats:
 
 | Package manager     | Command                                                        |
 | ------------------- | -------------------------------------------------------------- |
-| Homebrew (macOS)    | `brew install ysmilda/tap/stformat`                            |
-| Windows (winget)    | `winget install --id Ysmilda.stformat -e`                      |
-| Docker              | `docker run --rm ghcr.io/ysmilda/stformat:latest -version` |
 | Go (source)         | `go install github.com/ysmilda/stformat@latest`                |
 | Release binary      | archives + checksums on the [releases] page                    |
-
-> Homebrew and winget publish on each [tagged release]; Docker images are
-> multi-platform (`linux/amd64`, `linux/arm64`) and live at
-> `ghcr.io/ysmilda/stformat`.
 
 ## Usage
 
