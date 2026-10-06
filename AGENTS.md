@@ -10,7 +10,32 @@ task vet          # go vet ./...
 task lint         # golangci-lint (runs fmt-check first)
 task lint-fix     # golangci-lint --fix
 task golden       # regenerate golden testdata files
+task coverage     # test with coverage, print the per-function report
 ```
+
+## CI
+
+Three workflows in `.github/workflows/`:
+
+| Workflow      | Trigger                                              | Contents                                                 |
+| ------------- | ---------------------------------------------------- | -------------------------------------------------------- |
+| `ci.yml`      | every push/PR, no path filter                        | build, vet, `go mod tidy -diff`, tests + coverage, lint   |
+| `extension.yml` | paths: `extension/**`, `**/*.go`, `go.mod`, `go.sum` | VSIX build on windows-latest, uploads `stformat-ci.vsix`  |
+| `release.yml` | `v*` tags                                            | goreleaser release + VSIX                                 |
+
+`ci.yml` deliberately has no `paths` filter. A path-filtered workflow that is a
+required status check never reports on PRs that do not touch those files, and
+GitHub blocks the merge on a check that is still "Expected". Only add path
+filters to workflows whose jobs are not required.
+
+`extension.yml` watches the Go sources as well as `extension/**`, because
+`format.csproj` builds `Resources/stformat.exe` from them in a
+`BeforeTargets="PrepareForBuild"` step. A Go change can therefore break the VSIX
+build. To build the extension locally, run the msbuild commands from
+`extension.yml` against `extension\format\format.csproj`.
+
+Each workflow pins its Go version in a workflow-level `env: GO_VERSION`. Bump
+the value in every workflow file that needs it.
 
 To run a single test:
 

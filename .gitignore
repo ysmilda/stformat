@@ -1,6 +1,8 @@
 /dist/
 /stformat
 /stformat.exe
+/coverage.out
+/coverage.html
 
 extension/**/bin
 extension/**/obj

@@ -9,35 +9,75 @@ on:
 permissions:
   contents: read
 
+env:
+  GO_VERSION: '1.27'
+
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.26']
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: ${{ env.GO_VERSION }}
 
-      - name: Run tests
-        run: go test ./...
+      - name: Build
+        run: go build ./...
 
       - name: Vet
         run: go vet ./...
 
+      # The release runs `go mod tidy` before building, so keep go.mod tidy here.
+      - name: Check go.mod
+        run: go mod tidy -diff
+
+      - name: Test with coverage
+        run: |
+          set -o pipefail
+          go test ./... -covermode=atomic -coverprofile=coverage.out | tee test.log
+
+      - name: Coverage report
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
+          {
+            echo "### Code coverage"
+            echo
+            echo "| Package | Coverage |"
+            echo "| --- | ---: |"
+            awk 'match($0, /coverage: [0-9.]+%/) {
+              pkg = ($1 == "ok") ? $2 : $1
+              printf "| %s | %s |\n", pkg, substr($0, RSTART + 10, RLENGTH - 10)
+            }' test.log
+            echo "| **Total** | **$total%** |"
+            echo
+            echo "A package without a test file of its own reports 0%: \`internal/lexer\`"
+            echo "is covered indirectly by the formatter and handler tests."
+          } >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage.html
+            test.log
+          if-no-files-found: error
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: ${{ env.GO_VERSION }}
 
       - uses: golangci/golangci-lint-action@v7
         with:
