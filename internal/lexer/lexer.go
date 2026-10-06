@@ -2,13 +2,13 @@ package lexer
 
 import (
 	"strings"
-	"unicode"
 )
 
 // Lexer tokenizes IEC 61131-3 Structured Text source code.
 type Lexer struct {
 	input  string
 	pos    int
+	start  int // byte offset of the token currently being lexed
 	line   int
 	col    int
 	tokens []Token
@@ -38,6 +38,7 @@ func (l *Lexer) lexAll() {
 		Literal: "",
 		Line:    l.line,
 		Col:     l.col,
+		Offset:  l.pos,
 	})
 }
 
@@ -80,6 +81,7 @@ func (l *Lexer) emit(tt TokenType, literal string) {
 		Literal: literal,
 		Line:    l.line,
 		Col:     l.col,
+		Offset:  l.start,
 	})
 }
 
@@ -112,11 +114,19 @@ func (l *Lexer) skipLineComment() {
 	for l.pos < len(l.input) && l.peek() != '\n' {
 		l.advance()
 	}
+	// The line break itself is not part of the comment. A CR from a CRLF file
+	// must be dropped too, or it survives into the output and the formatted
+	// file ends up with mixed line endings.
+	end := l.pos
+	if end > start && l.input[end-1] == '\r' {
+		end--
+	}
 	l.tokens = append(l.tokens, Token{
 		Type:    TokenLineComment,
-		Literal: l.input[start:l.pos],
+		Literal: l.input[start:end],
 		Line:    l.line,
 		Col:     l.col,
+		Offset:  start,
 	})
 }
 
@@ -142,6 +152,7 @@ func (l *Lexer) skipBlockComment() {
 		Literal: l.input[start:l.pos],
 		Line:    l.line,
 		Col:     l.col,
+		Offset:  start,
 	})
 }
 
@@ -167,10 +178,12 @@ func (l *Lexer) skipPragma() {
 		Literal: l.input[start:l.pos],
 		Line:    l.line,
 		Col:     l.col,
+		Offset:  start,
 	})
 }
 
 func (l *Lexer) lex() {
+	l.start = l.pos
 	ch := l.peek()
 
 	// Check for two-character operators first
@@ -303,7 +316,11 @@ func (l *Lexer) lex() {
 	}
 }
 
-// lexString lexes a STRING ('...') or WSTRING ("...") literal.
+// lexString lexes a STRING ('...') or WSTRING ("...") literal. A literal may
+// span several lines: the content of such a literal is kept byte-for-byte, so
+// bailing out at the newline would silently rewrite the string. An
+// unterminated literal therefore swallows the rest of the input, which the
+// formatter copies through unchanged.
 func (l *Lexer) lexString(wide bool) {
 	start := l.pos
 	quote := byte('\'')
@@ -318,10 +335,6 @@ func (l *Lexer) lexString(wide bool) {
 				l.advance() // skip escape char
 			}
 			continue
-		}
-		if l.peek() == '\n' {
-			// Unterminated string; bail out
-			break
 		}
 		l.advance()
 	}
@@ -507,28 +520,52 @@ func (l *Lexer) lexIdentOrKeyword() {
 	l.emit(TokenIdent, literal)
 }
 
+// lexTimePayload consumes the components of a duration literal such as
+// T#1h30m20s or T#1d 12h 30m. A space only continues the literal when another
+// component follows, and a component never starts with an arbitrary letter:
+// that would swallow the code following the literal (for example
+// `T#0MS THEN x := 1`).
 func (l *Lexer) lexTimePayload() {
 	for l.pos < len(l.input) {
 		ch := l.peek()
-		if isTimeChar(ch) || isDigit(ch) || ch == '_' || ch == '+' || ch == '-' || ch == ':' || ch == '.' {
+		if isDigit(ch) || isTimeUnitChar(ch) || ch == '_' || ch == '-' ||
+			ch == '+' || ch == ':' || ch == '.' {
 			l.advance()
-		} else if ch == ' ' {
-			// A space is only part of the literal if a time component
-			// follows it (e.g. T#1h 30m 20s), so trailing whitespace
+			continue
+		}
+		if ch == ' ' {
+			// A space is part of the literal only when another component
+			// follows (e.g. `T#1h 30m 20s`), so trailing whitespace
 			// before the next token is not swallowed.
-			p := l.pos + 1
-			for p < len(l.input) && l.input[p] == ' ' {
-				p++
-			}
-			if p < len(l.input) && (isDigit(l.input[p]) || isTimeChar(l.input[p]) || l.input[p] == ':' || l.input[p] == '-' || l.input[p] == '.' || l.input[p] == '+' || l.input[p] == '_') {
+			if startsTimeComponent(l.input, l.pos) {
 				l.advance()
-			} else {
-				break
+				continue
 			}
-		} else {
 			break
 		}
+		break
 	}
+}
+
+// startsTimeComponent reports whether the space at index i is followed by
+// another duration component: a number, or a unit that is itself followed by a
+// number (`T#1h 30m`).
+func startsTimeComponent(s string, i int) bool {
+	for i < len(s) && s[i] == ' ' {
+		i++
+	}
+	if i >= len(s) {
+		return false
+	}
+	if isDigit(s[i]) {
+		return true
+	}
+	if !isTimeUnitChar(s[i]) {
+		return false
+	}
+	for i++; i < len(s) && (isTimeUnitChar(s[i]) || isDigit(s[i])); i++ {
+	}
+	return i < len(s) && isDigit(s[i])
 }
 
 func (l *Lexer) lexStringPayload() {
@@ -577,6 +614,9 @@ func isIdentPart(ch byte) bool {
 	return isIdentStart(ch) || isDigit(ch)
 }
 
-func isTimeChar(ch byte) bool {
-	return strings.ContainsRune("dhmsnspDT", rune(ch)) || unicode.IsLetter(rune(ch))
+// isTimeUnitChar reports whether ch may appear in the unit part of a duration
+// literal (T#1h30m, LT#2d12h, TIME#500ms). Units are single letters with
+// optional prefixes: d, h, m, s, ms, us, ns. Literals are case insensitive.
+func isTimeUnitChar(ch byte) bool {
+	return strings.ContainsRune("dhmsunDHMSUN", rune(ch))
 }

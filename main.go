@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ysmilda/stformat/formatter"
 	"github.com/ysmilda/stformat/handlers"
 )
 
@@ -58,24 +60,24 @@ Flags:
 
 	registry := handlers.NewRegistry()
 
-	// Read from stdin
+	// Read from stdin. The input is fed through formatter.Copy so that a
+	// "// stformat:ignore" stream is piped through without being parsed.
 	if *stdinFlag {
-		data, err := io.ReadAll(os.Stdin)
+		src, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return err
 		}
-		h := &handlers.STHandler{}
-		formatted, err := h.Format(data)
-		if err != nil {
+		var formatted bytes.Buffer
+		if _, err := formatter.Copy(&formatted, bytes.NewReader(src)); err != nil {
 			return err
 		}
 		if *checkFlag {
-			if string(formatted) != string(data) {
+			if formatted.String() != string(src) {
 				return fmt.Errorf("input is not formatted")
 			}
 			return nil
 		}
-		fmt.Print(string(formatted))
+		fmt.Print(formatted.String())
 		return nil
 	}
 
@@ -166,7 +168,7 @@ Flags:
 		ordered[r.index] = r
 	}
 
-	unformatted := 0
+	var unformatted []string
 	for _, j := range jobs {
 		file := j.file
 		r := ordered[j.index]
@@ -177,43 +179,58 @@ Flags:
 		formatted := r.formatted
 
 		changed := string(formatted) != string(data)
-		if changed {
-			unformatted++
-			if *checkFlag {
-				fmt.Printf("%s\n", file)
-				if *diffFlag {
-					printDiff(file, string(data), string(formatted))
-				}
-				continue
+		if !changed {
+			continue
+		}
+		if *checkFlag {
+			// Report every file, not just the first, and leave the exit
+			// code to the end so the list is complete.
+			unformatted = append(unformatted, file)
+			continue
+		}
+		if *diffFlag {
+			fmt.Printf("%s\n", file)
+			printDiff(string(data), string(formatted))
+			continue
+		}
+		if *writeFlag {
+			if err := os.WriteFile(file, formatted, 0644); err != nil {
+				return err
 			}
-			if *writeFlag {
-				if err := os.WriteFile(file, formatted, 0644); err != nil {
-					return err
-				}
-				if !*quietFlag {
-					fmt.Printf("formatted: %s\n", file)
-				}
-			}
-			if *stdoutFlag {
-				fmt.Print(string(formatted))
+			if !*quietFlag {
+				fmt.Printf("formatted: %s\n", file)
 			}
 		}
-		if !*checkFlag && !*writeFlag && !*stdoutFlag && changed {
-			// No write requested; print formatted output
+		if *stdoutFlag || !*writeFlag {
 			fmt.Print(string(formatted))
 		}
 	}
 
-	if *checkFlag && unformatted > 0 {
-		return fmt.Errorf("%d file(s) need formatting", unformatted)
+	if len(unformatted) > 0 {
+		for _, file := range unformatted {
+			fmt.Printf("unformatted: %s\n", file)
+		}
+		if !*quietFlag {
+			fmt.Printf("%d file(s) need formatting\n", len(unformatted))
+		}
+		os.Exit(1)
 	}
 
 	return nil
 }
 
 // expandFiles expands directory paths into files with a supported extension.
+// A file named both directly and through a directory is kept once.
 func expandFiles(paths, exts []string) ([]string, error) {
 	var files []string
+	seen := make(map[string]bool)
+	add := func(path string) {
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		files = append(files, path)
+	}
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
@@ -228,7 +245,7 @@ func expandFiles(paths, exts []string) ([]string, error) {
 					return nil
 				}
 				if slices.Contains(exts, strings.ToLower(filepath.Ext(path))) {
-					files = append(files, path)
+					add(path)
 				}
 				return nil
 			})
@@ -236,35 +253,16 @@ func expandFiles(paths, exts []string) ([]string, error) {
 				return nil, err
 			}
 		} else {
-			files = append(files, p)
+			add(p)
 		}
 	}
 	return files, nil
 }
 
-// printDiff prints a simple unified diff between old and new content.
-func printDiff(file, old, new string) {
-	oldLines := strings.Split(old, "\n")
-	newLines := strings.Split(new, "\n")
-
-	max := len(oldLines)
-	if len(newLines) > max {
-		max = len(newLines)
-	}
-
-	for i := range max {
-		var o, n string
-		if i < len(oldLines) {
-			o = oldLines[i]
-		}
-		if i < len(newLines) {
-			n = newLines[i]
-		}
-		if o == n {
-			continue
-		}
-		fmt.Printf("  %s\n", file)
-		fmt.Printf("  - %s\n", o)
-		fmt.Printf("  + %s\n", n)
+// printDiff prints the lines that differ between the old and the new content.
+// The caller prints the file name.
+func printDiff(old, new string) {
+	for _, l := range diffLines(strings.Split(old, "\n"), strings.Split(new, "\n")) {
+		fmt.Println(l)
 	}
 }

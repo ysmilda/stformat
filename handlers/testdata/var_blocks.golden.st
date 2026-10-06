@@ -16,7 +16,7 @@ VAR_CONFIG
 END_VAR
 
 VAR_ACCESS
-	nCount  : gvl.nCount : DINT READ_WRITE;
+	nCount : gvl.nCount : DINT READ_WRITE;
 	sSecret : gvl.sSecret : STRING READ_ONLY;
 END_VAR
 

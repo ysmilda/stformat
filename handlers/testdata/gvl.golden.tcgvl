@@ -4,7 +4,7 @@
     <Declaration><![CDATA[
 VAR_GLOBAL RETAIN
 	productPoolSize : UDINT := 20;
-	productKey      : STRING := ' ';
+	productKey : STRING := ' ';
 END_VAR
 ]]></Declaration>
   </GVL>

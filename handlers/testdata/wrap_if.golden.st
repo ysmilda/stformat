@@ -1,21 +1,21 @@
 PROGRAM WrapIf
 VAR
-	flagOperationalReady    : BOOL;
+	flagOperationalReady : BOOL;
 	flagMaintenanceOverride : BOOL;
 	flagEmergencyStopActive : BOOL;
-	flagPowerAvailable      : BOOL;
-	flagGateClosed          : BOOL;
-	flagInterlockEngaged    : BOOL;
-	flagSequenceRunning     : BOOL;
-	flagAbortRequested      : BOOL;
-	flagResetPermitted      : BOOL;
-	flagCycleComplete       : BOOL;
-	flagAutoModeSelected    : BOOL;
-	flagManualModeSelected  : BOOL;
-	flagRemoteModeSelected  : BOOL;
-	flagLocalModeSelected   : BOOL;
-	result                  : BOOL;
-	cmdText                 : STRING(80);
+	flagPowerAvailable : BOOL;
+	flagGateClosed : BOOL;
+	flagInterlockEngaged : BOOL;
+	flagSequenceRunning : BOOL;
+	flagAbortRequested : BOOL;
+	flagResetPermitted : BOOL;
+	flagCycleComplete : BOOL;
+	flagAutoModeSelected : BOOL;
+	flagManualModeSelected : BOOL;
+	flagRemoteModeSelected : BOOL;
+	flagLocalModeSelected : BOOL;
+	result : BOOL;
+	cmdText : STRING(80);
 END_VAR
 
 // Simple long IF: split at top-level AND.
@@ -29,7 +29,8 @@ IF flagOperationalReady
 	AND flagAbortRequested
 	AND flagResetPermitted
 	AND flagCycleComplete
-	AND flagAutoModeSelected THEN
+	AND flagAutoModeSelected
+THEN
 	result := TRUE;
 END_IF
 
@@ -42,7 +43,8 @@ IF (
 	AND flagPowerAvailable
 	AND flagGateClosed
 	AND flagInterlockEngaged
-	AND flagSequenceRunning THEN
+	AND flagSequenceRunning
+THEN
 	result := TRUE;
 END_IF
 
@@ -57,7 +59,8 @@ IF (
 		AND flagSequenceRunning
 		AND flagAbortRequested
 	)
-	AND flagResetPermitted THEN
+	AND flagResetPermitted
+THEN
 	result := TRUE;
 END_IF
 
@@ -71,7 +74,8 @@ ELSIF flagOperationalReady
 	AND flagGateClosed
 	AND flagInterlockEngaged
 	AND flagSequenceRunning
-	AND flagAbortRequested THEN
+	AND flagAbortRequested
+THEN
 	result := TRUE;
 END_IF
 
@@ -86,7 +90,8 @@ IF flagOperationalReady
 	OR flagEmergencyStopActive
 	OR flagPowerAvailable
 	OR flagGateClosed
-	OR flagInterlockEngaged THEN
+	OR flagInterlockEngaged
+THEN
 	result := TRUE;
 END_IF
 
@@ -97,7 +102,8 @@ IF cmdText = 'FIND THEN AND OR XOR'
 	AND flagMaintenanceOverride
 	AND flagEmergencyStopActive
 	AND flagPowerAvailable
-	AND flagGateClosed THEN
+	AND flagGateClosed
+THEN
 	result := TRUE;
 END_IF
 
@@ -113,7 +119,8 @@ IF (
 	AND flagGateClosed
 	AND flagInterlockEngaged
 	AND flagSequenceRunning
-	AND flagAbortRequested THEN
+	AND flagAbortRequested
+THEN
 	result := TRUE;
 END_IF
 
@@ -129,7 +136,8 @@ IF (
 	OR (
 		flagAbortRequested
 		AND flagResetPermitted
-	) THEN
+	)
+THEN
 	result := TRUE;
 END_IF
 
@@ -149,7 +157,8 @@ IF (
 		AND flagCycleComplete
 		AND flagAutoModeSelected
 		AND flagManualModeSelected
-	) THEN
+	)
+THEN
 	result := TRUE;
 END_IF
 
@@ -167,7 +176,8 @@ IF (
 	AND flagGateClosed
 	AND flagInterlockEngaged
 	AND flagSequenceRunning
-	AND flagAbortRequested THEN
+	AND flagAbortRequested
+THEN
 	result := TRUE;
 END_IF
 
@@ -187,7 +197,8 @@ IF (
 	AND flagSequenceRunning
 	AND flagAbortRequested
 	AND flagResetPermitted
-	AND flagCycleComplete THEN
+	AND flagCycleComplete
+THEN
 	result := TRUE;
 END_IF
 END_PROGRAM

@@ -192,8 +192,16 @@ const (
 type Token struct {
 	Type    TokenType
 	Literal string
-	Line    int
-	Col     int
+	// Line and Col are the position just past the last character of the
+	// token, so for a token that spans lines (a multiline string literal)
+	// they are the end position. Offset is the authoritative start of the
+	// token in the source.
+	Line int
+	Col  int
+	// Offset is the byte index of the first character of the token in the
+	// source. It lets callers copy the original text of a token range
+	// verbatim.
+	Offset int
 }
 
 // Keywords maps uppercase keyword strings to their token types.

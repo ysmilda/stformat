@@ -4,7 +4,7 @@ END_FUNCTION
 
 FUNCTION_BLOCK motor
 VAR_INPUT
-	cmd   : BOOL;
+	cmd : BOOL;
 	speed : REAL;
 END_VAR
 

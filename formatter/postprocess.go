@@ -4,213 +4,86 @@ import "strings"
 
 // PostProcess applies line-level formatting rules after the main
 // token-driven pass:
-//  1. Colon alignment in VAR/STRUCT declaration blocks
-//  2. Assignment (:=) alignment in consecutive assignment sequences
-//  3. Long-line wrapping for function/FB calls with multiple arguments
-//  4. Long-line wrapping for IF/ELSIF conditions at AND/OR/XOR operators,
+//  1. Long-line wrapping for function/FB calls with multiple arguments
+//  2. Long-line wrapping for IF/ELSIF conditions at AND/OR/XOR operators,
 //     recursively breaking open parenthesised operands
+//
+// Nothing is aligned: declarations and assignments keep the single space that
+// the token pass put around ':' and ':='. A comment at the end of a line never
+// counts towards the line length, and lines inside a "stformat:off" region are
+// left exactly as the token pass emitted them.
 func PostProcess(output string) string {
 	lines := strings.Split(output, "\n")
-	lines = alignVarColons(lines)
-	lines = alignAssignments(lines)
-	lines = wrapLongLines(lines)
-	return strings.Join(lines, "\n")
+	return strings.Join(wrapLongLines(lines, verbatimLines(lines)), "\n")
 }
 
-// --------------- colon alignment ---------------
+// --------------- ignored regions ---------------
 
-// alignVarColons aligns the colon position across declarations
-// inside VAR/STRUCT blocks.
-func alignVarColons(lines []string) []string {
-	inBlock := false
-	blockStart := 0
-
-	for i := range lines {
-		t := strings.TrimSpace(lines[i])
-		kw := blockKeyword(t)
-		switch kw {
-		case "var", "struct":
-			if !inBlock {
-				inBlock = true
-				blockStart = i + 1
+// verbatimLines marks the lines that belong to a formatting directive:
+// everything from a "stformat:off" line up to (but excluding) its
+// "stformat:on" line, and everything from a file-level "stformat:ignore" to
+// the end of the file. Those lines are never reflowed. Like the token pass, a
+// "stformat:ignore" only counts in the comment block at the top.
+func verbatimLines(lines []string) []bool {
+	marked := make([]bool, len(lines))
+	ignoring, leading := false, true
+	for i, line := range lines {
+		switch lineDirective(line) {
+		case directiveIgnore:
+			ignoring = leading
+		case directiveOff:
+			ignoring = true
+		case directiveOn:
+			ignoring = false
+		}
+		marked[i] = ignoring
+		if leading {
+			if t := strings.TrimSpace(line); t != "" && !isCommentLine(t, false) {
+				leading = false
 			}
-		case "end":
-			if inBlock {
-				applyColonAlign(lines, blockStart, i)
-				inBlock = false
-			}
 		}
 	}
-	return lines
+	return marked
 }
 
-// blockKeyword classifies a line as starting/ending a var/struct block.
-func blockKeyword(t string) string {
-	if t == "" {
-		return ""
-	}
-	// VAR / VAR_INPUT / VAR_OUTPUT / ... / VAR_EXTERNAL
-	if strings.HasPrefix(t, "VAR") {
-		fields := strings.Fields(t)
-		if len(fields) == 1 {
-			return "var"
-		}
-		// VAR RETAIN, VAR CONSTANT etc. — still a var block
-		return "var"
-	}
-	if strings.HasPrefix(t, "END_VAR") || strings.HasPrefix(t, "END_STRUCT") {
-		return "end"
-	}
-	if t == "STRUCT" || t == "UNION" {
-		return "struct"
-	}
-	return ""
-}
-
-// applyColonAlign aligns colons across declaration lines in [start, end).
-func applyColonAlign(lines []string, start, end int) {
-	// First pass: find the maximum colon column.
-	maxColon := 0
-	for i := start; i < end; i++ {
-		idx := declColonIndex(lines[i])
-		if idx > maxColon {
-			maxColon = idx
-		}
-	}
-	if maxColon == 0 {
-		return
-	}
-	// Second pass: pad each line.
-	for i := start; i < end; i++ {
-		idx := declColonIndex(lines[i])
-		if idx > 0 && idx < maxColon {
-			pad := strings.Repeat(" ", maxColon-idx)
-			lines[i] = lines[i][:idx] + pad + lines[i][idx:]
-		}
-	}
-}
-
-// declColonIndex returns the byte index of the first " : " in a
-// declaration line, or 0 if not a declaration.
-func declColonIndex(line string) int {
-	t := strings.TrimSpace(line)
-	if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "(*") {
-		return 0
-	}
-	// Must have an identifier at the start (the variable name).
-	if len(t) > 0 && !isIdentStart(t[0]) {
-		return 0
-	}
-	idx := strings.Index(line, " : ")
-	if idx < 0 {
-		idx = strings.Index(line, "  : ")
-	}
-	return idx
-}
-
-// --------------- assignment alignment ---------------
-
-// alignAssignments aligns the := operator across consecutive
-// assignment statements at the same indent level.
-func alignAssignments(lines []string) []string {
-	i := 0
-	for i < len(lines) {
-		t := strings.TrimSpace(lines[i])
-		if !isAssignmentLine(t) {
-			i++
-			continue
-		}
-		// Found start of a potential assignment group.
-		indent := lineIndent(lines[i])
-		groupStart := i
-		for i < len(lines) {
-			t = strings.TrimSpace(lines[i])
-			curIndent := lineIndent(lines[i])
-			if curIndent != indent || !isAssignmentLine(t) {
-				break
-			}
-			i++
-		}
-		groupEnd := i
-		if groupEnd-groupStart >= 2 {
-			applyAssignmentAlign(lines, groupStart, groupEnd)
-		}
-	}
-	return lines
-}
-
-// isAssignmentLine reports whether t is a simple assignment:
-// `name[.field] ... := expr;`
-func isAssignmentLine(t string) bool {
-	if t == "" {
-		return false
-	}
-	// Must start with an identifier.
-	if !isIdentStart(t[0]) {
-		return false
-	}
-	// Must contain := and end with ;
-	before, _, ok := strings.Cut(t, " := ")
-	if !ok {
-		return false
-	}
-	// The LHS must be an identifier chain (name, name.field, name^, etc.).
-	lhs := before
-	for _, c := range lhs {
-		if !isIdentChar(byte(c)) && c != '.' && c != '^' {
-			return false
-		}
-	}
-	return strings.HasSuffix(t, ";")
-}
-
-// applyAssignmentAlign pads the LHS of each line so := lines up.
-func applyAssignmentAlign(lines []string, start, end int) {
-	maxLHS := 0
-	for i := start; i < end; i++ {
-		t := strings.TrimSpace(lines[i])
-		if idx := strings.Index(t, " := "); idx > maxLHS {
-			maxLHS = idx
-		}
-	}
-	for i := start; i < end; i++ {
-		indent := lineIndent(lines[i])
-		t := strings.TrimSpace(lines[i])
-		if idx := strings.Index(t, " := "); idx > 0 && idx < maxLHS {
-			pad := strings.Repeat(" ", maxLHS-idx)
-			t = t[:idx] + pad + t[idx:]
-			lines[i] = indent + t
-		}
-	}
+// isVerbatim reports whether line i was copied from the source unchanged.
+func isVerbatim(verbatim []bool, i int) bool {
+	return i < len(verbatim) && verbatim[i]
 }
 
 // --------------- long-line wrapping ---------------
 
 const maxLineLen = 120
 
-// wrapLongLines splits lines that exceed maxLineLen and contain a
-// multi-argument function/FB call. Comment lines are never wrapped.
-func wrapLongLines(lines []string) []string {
+// wrapLongLines splits lines whose code exceeds maxLineLen and that contain a
+// multi-argument function/FB call or a splittable IF/ELSIF condition.
+// Comment-only lines, lines with an unterminated string literal and lines
+// inside an ignored region are never wrapped. A comment at the end of a line
+// does not count towards the length and stays at the end of the last line
+// that the wrap produces.
+func wrapLongLines(lines []string, verbatim []bool) []string {
 	var result []string
 	inBlockComment := false
-	for _, line := range lines {
+	for i, line := range lines {
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "(*") {
 			inBlockComment = !strings.HasSuffix(t, "*)")
-		} else if inBlockComment {
-			if strings.HasSuffix(t, "*)") {
-				inBlockComment = false
-			}
+		} else if inBlockComment && strings.HasSuffix(t, "*)") {
+			inBlockComment = false
 		}
-		if len(line) > maxLineLen && !isCommentLine(t, inBlockComment) {
-			if wrapped := wrapIf(line); wrapped != nil {
-				result = append(result, wrapped...)
-				continue
-			}
-			if wrapped := wrapStatement(line); wrapped != nil {
-				result = append(result, wrapped...)
-				continue
-			}
+		code, comment := splitTrailingComment(line)
+		if isVerbatim(verbatim, i) || isCommentLine(t, inBlockComment) ||
+			hasOpenQuote(code) || len(code) <= maxLineLen {
+			result = append(result, line)
+			continue
+		}
+		if wrapped := wrapIf(code); wrapped != nil {
+			result = append(result, withTrailingComment(wrapped, comment)...)
+			continue
+		}
+		if wrapped := wrapStatement(code); wrapped != nil {
+			result = append(result, withTrailingComment(wrapped, comment)...)
+			continue
 		}
 		result = append(result, line)
 	}
@@ -221,8 +94,66 @@ func wrapLongLines(lines []string) []string {
 func isCommentLine(t string, inBlockComment bool) bool {
 	return inBlockComment ||
 		strings.HasPrefix(t, "//") ||
-		strings.HasPrefix(t, "(*") ||
-		strings.Contains(t, "//")
+		strings.HasPrefix(t, "(*")
+}
+
+// splitTrailingComment splits a line into its code and the comment that trails
+// it. Either part can be empty. A "//" or "(*" inside a string literal does not
+// start a comment.
+func splitTrailingComment(line string) (code, comment string) {
+	code, comment = line, ""
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '\'', '"':
+			i = skipQuoted(line, i) - 1
+		case '/':
+			if i+1 < len(line) && line[i+1] == '/' {
+				code, comment = line[:i], line[i:]
+				return trimBothEnds(code, comment)
+			}
+		case '(':
+			if i+1 < len(line) && line[i+1] == '*' &&
+				strings.HasSuffix(strings.TrimSpace(line), "*)") {
+				code, comment = line[:i], line[i:]
+				return trimBothEnds(code, comment)
+			}
+		}
+	}
+	return code, comment
+}
+
+// trimBothEnds removes trailing blanks from code and the surrounding blanks
+// from comment.
+func trimBothEnds(code, comment string) (string, string) {
+	return strings.TrimRight(code, " \t"), strings.TrimSpace(comment)
+}
+
+// withTrailingComment appends comment to the last line of wrapped, separated by
+// two spaces. An empty comment leaves wrapped untouched.
+func withTrailingComment(wrapped []string, comment string) []string {
+	if comment == "" || len(wrapped) == 0 {
+		return wrapped
+	}
+	last := len(wrapped) - 1
+	wrapped[last] = strings.TrimRight(wrapped[last], " \t") + "  " + comment
+	return wrapped
+}
+
+// hasOpenQuote reports whether s ends inside an unterminated string literal,
+// i.e. the literal continues on the next line and must not be reflowed.
+func hasOpenQuote(s string) bool {
+	for i := 0; i < len(s); {
+		if s[i] != '\'' && s[i] != '"' {
+			i++
+			continue
+		}
+		end := skipQuoted(s, i)
+		if end > len(s) {
+			return true
+		}
+		i = end
+	}
+	return false
 }
 
 // wrapStatement attempts to wrap a single long statement line by
@@ -235,7 +166,7 @@ func wrapStatement(line string) []string {
 	}
 
 	// Find the semicolon that ends the statement.
-	semi := strings.LastIndex(trimmed, ";")
+	semi := lastSemicolon(trimmed)
 	if semi < 0 {
 		return nil
 	}
@@ -284,22 +215,61 @@ func wrapStatement(line string) []string {
 	return result
 }
 
+// lastSemicolon returns the index of the last ';' outside a string literal, or
+// -1 when there is none. Scanning backwards means a literal is walked once per
+// ';' or ')' inside it, which is irrelevant at maxLineLen but would matter if
+// that limit ever became configurable.
+func lastSemicolon(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		switch s[i] {
+		case '\'', '"':
+			i = skipQuotedStart(s, i) - 1
+		case ';':
+			return i
+		}
+	}
+	return -1
+}
+
+// skipQuotedStart returns the index just before the opening quote of the
+// literal that ends at index i.
+func skipQuotedStart(s string, i int) int {
+	quote := s[i]
+	for j := i - 1; j >= 0; j-- {
+		if s[j] != quote {
+			continue
+		}
+		// A doubled quote is an escaped quote, not the opening one.
+		if j > 0 && s[j-1] == quote {
+			j--
+			continue
+		}
+		return j
+	}
+	return 0
+}
+
 // findLastCallParens finds the matching ( and ) of the last call
 // in stmt. Returns (open, close) indices or (-1, -1).
 func findLastCallParens(stmt string) (int, int) {
-	close := -1
 	for i := len(stmt) - 1; i >= 0; i-- {
-		if stmt[i] == ')' {
-			close = i
-			break
+		switch stmt[i] {
+		case '\'', '"':
+			i = skipQuotedStart(stmt, i) - 1
+		case ')':
+			return matchParens(stmt, i)
 		}
 	}
-	if close < 0 {
-		return -1, -1
-	}
+	return -1, -1
+}
+
+// matchParens walks back from the ')' at close to its opening '('.
+func matchParens(stmt string, close int) (int, int) {
 	depth := 1
 	for i := close - 1; i >= 0; i-- {
 		switch stmt[i] {
+		case '\'', '"':
+			i = skipQuotedStart(stmt, i) - 1
 		case ')':
 			depth++
 		case '(':
@@ -312,13 +282,18 @@ func findLastCallParens(stmt string) (int, int) {
 	return -1, -1
 }
 
-// splitTopLevelArgs splits a string by commas at depth 0.
+// splitTopLevelArgs splits a string by commas at depth 0, ignoring commas and
+// brackets inside string literals. A leading or trailing comma yields no empty
+// argument.
 func splitTopLevelArgs(s string) []string {
 	var args []string
 	depth := 0
 	start := 0
-	for i := range len(s) {
+	for i := 0; i < len(s); i++ {
 		switch s[i] {
+		case '\'', '"':
+			// Jump past the literal; it may contain commas and brackets.
+			i = skipQuoted(s, i) - 1
 		case '(', '[':
 			depth++
 		case ')', ']':
@@ -327,15 +302,21 @@ func splitTopLevelArgs(s string) []string {
 			}
 		case ',':
 			if depth == 0 {
-				args = append(args, s[start:i])
+				args = appendArg(args, s[start:i])
 				start = i + 1
 			}
 		}
 	}
-	if start <= len(s) {
-		args = append(args, s[start:])
+	return appendArg(args, s[start:])
+}
+
+// appendArg adds one argument, skipping an empty one so that a leading,
+// trailing or doubled comma does not produce a blank line.
+func appendArg(args []string, arg string) []string {
+	if arg == "" {
+		return args
 	}
-	return args
+	return append(args, arg)
 }
 
 // --------------- long IF/ELSIF wrapping ---------------
@@ -344,8 +325,9 @@ func splitTopLevelArgs(s string) []string {
 // operand on its own indented line, splitting at top-level AND/OR/XOR
 // operators. Every parenthesised operand is broken open: its operands sit one
 // indent level deeper and the closing paren aligns with the operand level.
-// Nested groups recurse. Returns nil if the line is not an IF/ELSIF header
-// or if the condition cannot be split.
+// Nested groups recurse. The THEN keyword moves to a line of its own at the
+// indentation of the IF/ELSIF. Returns nil if the line is not an IF/ELSIF
+// header or if the condition cannot be split.
 func wrapIf(line string) []string {
 	trimmed := strings.TrimSpace(line)
 
@@ -380,10 +362,11 @@ func wrapIf(line string) []string {
 
 	indent := lineIndent(line)
 	lines := emitOperands(cond, indent+kw, indent+"\t", true)
-	if len(lines) > 0 {
-		lines[len(lines)-1] += thenSuffix
+	if len(lines) == 0 {
+		return nil
 	}
-	return lines
+	lines[len(lines)-1] = strings.TrimRight(lines[len(lines)-1], " \t")
+	return append(lines, indent+strings.TrimSpace(thenSuffix))
 }
 
 // emitOperands lays out the operands of cond. inlineFirst moves the first
@@ -542,21 +525,27 @@ func findTopLevelOps(s string) []int {
 }
 
 // skipQuoted returns the index just past the quoted string starting at i,
-// treating doubled quote characters as an escaped quote.
+// treating doubled quote characters and a dollar escape as part of the
+// literal. It returns a value greater than len(s) when the literal is
+// unterminated.
 func skipQuoted(s string, i int) int {
 	quote := s[i]
 	i++
 	for i < len(s) {
-		if s[i] == quote {
+		switch {
+		case s[i] == '$' && i+1 < len(s):
+			i += 2
+		case s[i] == quote:
 			if i+1 < len(s) && s[i+1] == quote {
 				i += 2
 				continue
 			}
 			return i + 1
+		default:
+			i++
 		}
-		i++
 	}
-	return i
+	return len(s) + 1
 }
 
 // --------------- helpers ---------------

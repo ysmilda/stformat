@@ -97,6 +97,64 @@ func TestXMLMalformed(t *testing.T) {
 	}
 }
 
+// TestXMLLineEnding checks that formatting an XML file keeps the line ending
+// it uses, including the line breaks inserted around a CDATA section. The XML
+// outside the sections is never touched.
+func TestXMLLineEnding(t *testing.T) {
+	t.Parallel()
+	lf := "<?xml version=\"1.0\"?>\n<TcPlcObject>\n  <POU Name=\"P\" Id=\"{1}\">\n" +
+		"    <Declaration><![CDATA[TYPE t : STRUCT a : INT; END_STRUCT END_TYPE]]></Declaration>\n" +
+		"  </POU>\n</TcPlcObject>\n"
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+
+	for _, in := range []string{lf, crlf} {
+		out, err := (&XMLHandler{}).Format([]byte(in))
+		if err != nil {
+			t.Fatalf("Format: %v", err)
+		}
+		got := string(out)
+		crlfIn := strings.Contains(in, "\r\n")
+		if crlfIn != strings.Contains(got, "\r\n") {
+			t.Errorf("line ending changed for CRLF=%v input: %q", crlfIn, got)
+		}
+		// No mixing: an LF file must gain no carriage return at all.
+		if !crlfIn && strings.Contains(got, "\r") {
+			t.Errorf("unexpected carriage returns: %q", got)
+		}
+		// And a CRLF file must not keep a bare LF.
+		if crlfIn && strings.Count(got, "\n") != strings.Count(got, "\r\n") {
+			t.Errorf("mixed line endings: %q", got)
+		}
+		if again, err := (&XMLHandler{}).Format(out); err != nil || string(again) != got {
+			t.Errorf("not idempotent: %q", string(again))
+		}
+	}
+}
+
+// TestLooksLikeST checks that prose in a CDATA section is not mistaken for ST.
+// It used to be, because the guard accepted any text with two or more words,
+// and keywords in the prose were then uppercased.
+func TestLooksLikeST(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{
+		"not-CDATA":                             false,
+		"some prose, not code":                  false,
+		"Returns: the number of items written.": false,
+		"":                                      false,
+		"x := 1;":                               true,
+		"FUNCTION f : BOOL":                     true,
+		"TYPE S : STRUCT a : INT; END_STRUCT":   true,
+		"(key := 'aaa', description := 'slot')": true,
+		"arr : ARRAY[0..3] OF INT;":             true,
+		"s : STRING(80) := 'hi';":               true,
+	}
+	for in, want := range cases {
+		if got := looksLikeST(in); got != want {
+			t.Errorf("looksLikeST(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 // TestRegistryExtensionMapping verifies that each supported extension is
 // routed to the correct handler.
 func TestRegistryExtensionMapping(t *testing.T) {

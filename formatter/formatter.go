@@ -28,46 +28,87 @@ const (
 // Line breaks are deferred ("pending") so that indentation changes that
 // apply to the next token are reflected before the line break is rendered.
 type Formatter struct {
-	tokens       []lexer.Token
-	pos          int
-	blocks       []blockKind
-	buf          strings.Builder
-	lastCh       byte
-	prevCh       byte
-	lineStart    bool
-	pendingNL    bool
+	tokens []lexer.Token
+	// source holds the input with its line endings normalised to LF, so the
+	// token offsets and the verbatim copies below line up. original is the
+	// input as it was given, ending included.
+	source   string
+	original string
+	// ending is the line ending to put in the output; the pass itself only
+	// ever writes LF and Run converts at the end.
+	ending    string
+	ignoreAll bool
+	runs      []tokenRun
+	runPos    int
+	pos       int
+	blocks    []blockKind
+	buf       strings.Builder
+	lastCh    byte
+	prevCh    byte
+	lineStart bool
+	pendingNL bool
+
 	pendingBlank bool
 	loopKw       lexer.TokenType // set by FOR/WHILE openers, consumed by DO
 	caseSeen     bool            // set by CASE opener, consumed by OF
-	maxLine      int
 }
 
-// New creates a formatter from a token stream.
-func New(tokens []lexer.Token) *Formatter {
-	return &Formatter{
-		tokens:    tokens,
-		lastCh:    '\n',
+// New creates a formatter for source. The original text is needed because an
+// ignored region is copied from it verbatim.
+//
+// The line ending of the input is reproduced in the output: a CRLF file stays
+// CRLF and an LF file stays LF. The source is normalised to LF for the pass and
+// converted back on the way out, which also normalises the line breaks inside
+// multi-line string literals and ignored regions.
+func New(source string) *Formatter {
+	return newFormatter(source, LineEnding(source))
+}
+
+func newFormatter(source, ending string) *Formatter {
+	text := toLF(source)
+	f := &Formatter{
+		tokens:    lexer.Lex(text),
+		source:    text,
+		original:  source,
+		ending:    ending,
 		lineStart: true,
-		maxLine:   120,
+		lastCh:    '\n',
 	}
+	if all, runs := scanDirectives(f.tokens); !all {
+		f.runs = runs
+	} else {
+		// A file-level "stformat:ignore" leaves the file byte-for-byte alone.
+		f.ignoreAll = true
+	}
+	return f
 }
 
-// Format lexes the source and formats it.
+// Format formats the source, keeping the line ending it already uses.
 func Format(source string) string {
-	tokens := lexer.Lex(source)
-	f := New(tokens)
-	return f.Run()
+	return newFormatter(source, LineEnding(source)).Run()
 }
 
-// FormatWithCheck formats and returns whether it changed.
-func FormatWithCheck(source string) (string, bool) {
-	result := Format(source)
-	return result, result != source
+// FormatWith formats the source and writes every line break as ending. Use it
+// when the line ending must follow something other than the text being
+// formatted, such as the rest of an XML file whose CDATA section holds the code.
+// An ending other than "\r\n" or "\n" falls back to the one found in source.
+func FormatWith(source, ending string) string {
+	if ending != "\r\n" && ending != "\n" {
+		ending = LineEnding(source)
+	}
+	return newFormatter(source, ending).Run()
 }
 
-// Run executes the formatting pass and returns the output string.
+// Run executes the formatting pass and returns the output string, using the
+// line ending of the input.
 func (f *Formatter) Run() string {
+	if f.ignoreAll {
+		return f.original
+	}
 	for {
+		if f.emitVerbatim() {
+			continue
+		}
 		tok := f.peek()
 		if tok.Type == lexer.TokenEOF {
 			break
@@ -80,7 +121,65 @@ func (f *Formatter) Run() string {
 	if f.lastCh != '\n' {
 		f.writeCh('\n')
 	}
-	return PostProcess(f.buf.String())
+	out := PostProcess(f.buf.String())
+	if f.ending != "\n" {
+		out = strings.ReplaceAll(out, "\n", f.ending)
+	}
+	return out
+}
+
+// emitVerbatim copies an ignored region from the source text and skips the
+// tokens it covers. It returns false when the next token is not part of an
+// ignored region.
+func (f *Formatter) emitVerbatim() bool {
+	if f.runPos >= len(f.runs) {
+		return false
+	}
+	run := f.runs[f.runPos]
+	if run.start != f.pos {
+		return false
+	}
+	f.runPos++
+
+	from := f.tokens[run.start].Offset
+	to := len(f.source)
+	if run.end < len(f.tokens) {
+		to = f.tokens[run.end].Offset
+	}
+	if trailsCode(f.source, from) {
+		// The directive trails code on its own source line: drop the
+		// pending line break so it stays there.
+		f.pendingNL = false
+		f.pendingBlank = false
+		f.flush()
+		f.writeCh(' ')
+		f.writeCh(' ')
+	} else {
+		f.flush()
+	}
+	f.writeRaw(strings.TrimRight(f.source[from:to], " \t"))
+	if f.lastCh == '\n' {
+		// The verbatim text ends its own line; indent what follows.
+		f.requestNL()
+	}
+	f.pos = run.end
+	return true
+}
+
+// trailsCode reports whether the byte at index i is preceded, on the same line
+// and without an intervening line break, by non-blank text.
+func trailsCode(src string, i int) bool {
+	for i--; i >= 0; i-- {
+		switch src[i] {
+		case '\n':
+			return false
+		case ' ', '\t', '\r':
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Formatter) peek() lexer.Token {
@@ -154,6 +253,11 @@ func (f *Formatter) flush() {
 // without adding any leading whitespace.
 func (f *Formatter) attach(s string) {
 	f.flush()
+	f.writeRaw(s)
+}
+
+// writeRaw copies text from the source unchanged, newlines included.
+func (f *Formatter) writeRaw(s string) {
 	for i := range len(s) {
 		f.writeCh(s[i])
 	}
@@ -221,6 +325,9 @@ func (f *Formatter) endBreak() {
 
 // emitToken processes the token at the current position. It returns false
 // if the token was not consumed (caller advances).
+//
+// The switch is a dispatch table over the token types, grouped by what they
+// mean for layout; the banner comments name the groups.
 func (f *Formatter) emitToken() bool {
 	tok := f.peek()
 
@@ -229,33 +336,7 @@ func (f *Formatter) emitToken() bool {
 		return true
 	}
 
-	lit := tok.Literal
-	if s := keywordSpelling(tok); s != "" {
-		lit = s
-	} else {
-		switch tok.Type {
-		case lexer.TokenAssign:
-			lit = ":="
-		case lexer.TokenOutputBind:
-			lit = "=>"
-		case lexer.TokenNotEqual:
-			lit = "<>"
-		case lexer.TokenLessEq:
-			lit = "<="
-		case lexer.TokenGreaterEq:
-			lit = ">="
-		case lexer.TokenPower:
-			lit = "**"
-		case lexer.TokenDotDot:
-			lit = ".."
-		case lexer.TokenSAssign:
-			lit = "S="
-		case lexer.TokenRAssign:
-			lit = "R="
-		case lexer.TokenRefAssign:
-			lit = "REF="
-		}
-	}
+	lit := tokenSpelling(tok)
 
 	switch tok.Type {
 	// ------- POU declarations -------
@@ -921,6 +1002,38 @@ func (f *Formatter) looksLikeCaseLabel() bool {
 	return false
 }
 
+// tokenSpelling returns the text to emit for a token: the uppercase keyword
+// spelling where there is one, the canonical spelling of a two-character
+// operator, or the token's own literal.
+func tokenSpelling(tok lexer.Token) string {
+	if s := keywordSpelling(tok); s != "" {
+		return s
+	}
+	switch tok.Type {
+	case lexer.TokenAssign:
+		return ":="
+	case lexer.TokenOutputBind:
+		return "=>"
+	case lexer.TokenNotEqual:
+		return "<>"
+	case lexer.TokenLessEq:
+		return "<="
+	case lexer.TokenGreaterEq:
+		return ">="
+	case lexer.TokenPower:
+		return "**"
+	case lexer.TokenDotDot:
+		return ".."
+	case lexer.TokenSAssign:
+		return "S="
+	case lexer.TokenRAssign:
+		return "R="
+	case lexer.TokenRefAssign:
+		return "REF="
+	}
+	return tok.Literal
+}
+
 // keywordSpelling returns the spelling to emit for a keyword token. For the
 // date/time type names that have an accepted abbreviation (TOD, LTOD, DT,
 // LDT) the written form is preserved (uppercased) instead of expanding the
@@ -966,20 +1079,35 @@ func (f *Formatter) handleAtom(tok lexer.Token, kw string) {
 	f.attach(lit)
 }
 
-// emitComment emits a comment token on its own line.
+// emitComment emits a comment. A comment that trails code in the source stays
+// at the end of that line (two spaces separate it from the code); any other
+// comment gets a line of its own. Directives keep their original spelling.
 func (f *Formatter) emitComment(tok lexer.Token) {
-	f.flush()
-	if !f.lineStart {
-		f.requestNL()
-		f.flush()
+	lit := tok.Literal
+	if parseDirective(lit) == "" {
+		lit = normalizeComment(lit)
 	}
-	f.attach(normalizeComment(tok.Literal))
+	if f.commentTrailsCode(tok) && !strings.Contains(lit, "\n") {
+		f.pendingNL = false
+		f.pendingBlank = false
+		f.writeCh(' ')
+		f.writeCh(' ')
+	}
+	f.attach(lit)
 	f.requestNL()
 	f.advance()
 }
 
+// commentTrailsCode reports whether the comment token follows code on the same
+// source line.
+func (f *Formatter) commentTrailsCode(tok lexer.Token) bool {
+	return trailsCode(f.source, tok.Offset)
+}
+
 // normalizeComment ensures a comment starts with a space and a capital letter.
-// Pragmas (opening with "{") are left unchanged.
+// Pragmas (opening with "{") are left unchanged. Line endings need no attention
+// here: the formatter works on LF internally and restores the ending of the
+// input at the end.
 func normalizeComment(lit string) string {
 	switch {
 	case strings.HasPrefix(lit, "//"):

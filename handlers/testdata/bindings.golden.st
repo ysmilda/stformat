@@ -1,18 +1,18 @@
 PROGRAM p
 VAR
-	setOut   : BOOL;
+	setOut : BOOL;
 	resetOut : BOOL;
-	bitUp    : BOOL;
-	bitDown  : BOOL;
-	pSrc     : POINTER TO INT;
-	pDst     : POINTER TO INT;
-	pref     : REFERENCE TO INT;
-	refTo    : REF_TO INT;
-	pInst    : POINTER TO INT;
-	pTmp     : POINTER TO INT;
-	valid    : BOOL;
-	rAxis    : REAL;
-	fb       : fb_axis;
+	bitUp : BOOL;
+	bitDown : BOOL;
+	pSrc : POINTER TO INT;
+	pDst : POINTER TO INT;
+	pref : REFERENCE TO INT;
+	refTo : REF_TO INT;
+	pInst : POINTER TO INT;
+	pTmp : POINTER TO INT;
+	valid : BOOL;
+	rAxis : REAL;
+	fb : fb_axis;
 END_VAR
 
 setOut S= bitUp;

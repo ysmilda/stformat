@@ -29,7 +29,7 @@ END_VAR
 n := 0;
 // Count
 WHILE r^ > 0 DO
-	n  := n + 1;
+	n := n + 1;
 	r^ := r^ - 1;
 END_WHILE
 

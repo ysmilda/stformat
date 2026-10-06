@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/ysmilda/stformat/formatter"
@@ -60,10 +61,17 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 				raw := string(t)
 				inner := strings.TrimSpace(raw)
 				if len(inner) > 0 && looksLikeST(inner) {
-					formatted := formatter.Format(inner)
+					// Follow the line ending of the block, or of the rest of
+					// the file when the block is a single line and has none of
+					// its own. The XML around it is never touched.
+					ending := formatter.LineEnding(raw)
+					if !strings.Contains(raw, "\n") {
+						ending = formatter.LineEnding(string(contents))
+					}
+					formatted := formatter.FormatWith(inner, ending)
 					// Declaration/implementation content starts and ends
 					// with a line break so git diffs are per-line readable.
-					wrapped := "\n" + strings.TrimRight(formatted, "\n") + "\n"
+					wrapped := ending + strings.TrimRight(formatted, "\r\n") + ending
 					if wrapped != raw {
 						edits = append(edits, xmlEdit{
 							start: int(tokStart),
@@ -98,10 +106,24 @@ func isCDATA(src []byte, from, to int64) bool {
 	return bytes.HasPrefix(src[from:to], []byte("<![CDATA["))
 }
 
-// looksLikeST is a light guard to avoid reformatting text nodes that are
-// not Structured Text.
+// stStartKeywords are the keywords that a Structured Text section can begin
+// with.
+var stStartKeywords = []string{
+	"TYPE", "VAR", "FUNCTION", "FUNCTION_BLOCK", "PROGRAM", "INTERFACE",
+	"CLASS", "METHOD", "PROPERTY", "ACTION", "STRUCT", "UNION", "NAMESPACE",
+}
+
+// looksLikeST is a guard to avoid reformatting text nodes that are not
+// Structured Text. It requires either a structural marker (a statement
+// terminator, an assignment, a call or an array) or a leading declaration
+// keyword. Counting words is not enough: prose such as "some prose, not code"
+// is two words and would have its keywords uppercased.
 func looksLikeST(s string) bool {
-	return strings.ContainsAny(s, ":=;()[]") || len(strings.Fields(s)) > 1
+	if strings.ContainsAny(s, ";()[]") || strings.Contains(s, ":=") {
+		return true
+	}
+	word, _, _ := strings.Cut(strings.TrimSpace(s), " ")
+	return slices.Contains(stStartKeywords, strings.ToUpper(word))
 }
 
 // applyEdits applies edits in ascending offset order, copying untouched

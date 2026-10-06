@@ -6,7 +6,7 @@
 {attribute 'hide'}
 VAR_GLOBAL CONSTANT
 	kMaxCount : UDINT := 100;
-	kName     : STRING := 'app';
+	kName : STRING := 'app';
 END_VAR
 ]]></Declaration>
   </GVL>

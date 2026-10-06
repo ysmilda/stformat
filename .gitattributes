@@ -1,0 +1,4 @@
+# This repository stores LF and checks out LF. Windows clones otherwise get
+# CRLF, which gofmt rejects for Go sources and which breaks the byte-for-byte
+# golden file comparison (formatter output is always LF).
+* text=auto eol=lf
