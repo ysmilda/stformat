@@ -1,5 +1,8 @@
 # stformat
 
+> [!NOTE]
+> This project is AI generated but reviewed and maintained by a human.
+
 An opiniated formatter for IEC 61131-3 Structured Text (ST) and TwinCAT XML project files.
 
 It follows the following rules:
