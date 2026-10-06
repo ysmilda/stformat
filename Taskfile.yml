@@ -30,6 +30,12 @@ tasks:
     cmds:
       - go test -v ./...
 
+  coverage:
+    desc: Run all tests and write a coverage profile
+    cmds:
+      - go test ./... -covermode=atomic -coverprofile=coverage.out
+      - go tool cover -func=coverage.out
+
   golden:
     desc: Regenerate golden testdata files
     cmds:

@@ -1,0 +1,57 @@
+name: Extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'extension/**'
+      - .github/workflows/extension.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - 'extension/**'
+      - .github/workflows/extension.yml
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.27'
+
+jobs:
+  vsix:
+    name: Build VSIX
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # format.csproj runs `go build` for Resources\stformat.exe.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Restore VSIX project
+        run: >
+          msbuild extension\format\format.csproj
+          /t:Restore
+          /p:Configuration=Release
+          /p:Platform=AnyCPU
+
+      - name: Build VSIX
+        run: >
+          msbuild extension\format\format.csproj
+          /t:Build
+          /p:Configuration=Release
+          /p:Platform=AnyCPU
+          /p:ReferencePath="$env:GITHUB_WORKSPACE\extension\format\References"
+          /p:DeployExtension=false
+          /p:BuildVSIXContainer=true
+          /v:m
+
+      - name: Stage VSIX artifact
+        run: |
+          $vsix = 'extension\format\bin\Release\format.vsix'
+          if (-not (Test-Path $vsix)) { throw "VSIX not produced: $vsix" }
