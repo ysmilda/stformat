@@ -22,7 +22,7 @@ go test ./handlers -run TestSTFiles/addresses
 
 `TestProjectFormatLossless` in `handlers/project_test.go` formats every
 supported file in a real ST/TwinCAT project tree and independently verifies
-(without the internal lexer/parser) that only whitespace and character case
+(without using the internal lexer) that only whitespace and character case
 changed. It is skipped unless `STFORMAT_PROJECT_DIR` is set:
 
 ```powershell
@@ -43,13 +43,12 @@ equal, so any removed/added/reordered content fails the test.
 
 | Directory      | Purpose                                                                 |
 | -------------- | ----------------------------------------------------------------------- |
-| `parser/`      | IEC 61131-3 ST parser, produces an AST                                  |
-| `formatter/`   | Takes AST, applies formatting rules (indentation, spacing, line wrap)   |
+| `formatter/`   | Formats the token stream: indentation, spacing, line wrap, comment and directive handling |
 | `handlers/`    | File-type handlers: `STHandler` (plain ST) and `XMLHandler` (TwinCAT XML wrapping ST in CDATA) |
 | `handlers/testdata/` | Golden test inputs (`*.in.*`) and expected outputs (`*.golden.*`) |
-| `internal/lexer/` | Lexer used by parser and tests                                       |
+| `internal/lexer/` | Tokenizer shared by the formatter and tests                          |
 
-Entry point is `main.go`, which wires the handler registry, expands file paths, and dispatches to handlers.
+Entry point is `main.go`, which wires the handler registry, expands file paths, and dispatches to handlers. Formatting is token-driven end to end: there is no AST and no separate parser pass.
 
 ## Golden tests
 

@@ -14,17 +14,6 @@ type Lexer struct {
 	tokens []Token
 }
 
-// LexError represents a lexical error with source position.
-type LexError struct {
-	Line int
-	Col  int
-	Msg  string
-}
-
-func (e LexError) Error() string {
-	return e.Msg
-}
-
 // Lex tokenizes the input string and returns all tokens.
 func Lex(input string) []Token {
 	l := &Lexer{
@@ -34,17 +23,6 @@ func Lex(input string) []Token {
 	}
 	l.lexAll()
 	return l.tokens
-}
-
-// LexErrors tokenizes the input string and returns tokens plus any errors.
-func LexErrors(input string) ([]Token, []LexError) {
-	l := &Lexer{
-		input: input,
-		line:  1,
-		col:   1,
-	}
-	l.lexAll()
-	return l.tokens, nil
 }
 
 func (l *Lexer) lexAll() {
