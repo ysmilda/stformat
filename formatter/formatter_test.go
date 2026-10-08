@@ -211,6 +211,25 @@ func TestFormatIDs(t *testing.T) {
 			want: "PROGRAM p\n// stformat:off\naveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\na := 1;\nlongerName := 2;\n// stformat:on\nEND_PROGRAM\n",
 		},
 		{
+			// The short line opens the comment, so a later long line is inside
+			// it and must stay as it is.
+			name: "call inside a block comment opened on a short line is not wrapped",
+			in:   "PROGRAM p\n(* block\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\n*)\ncal(a := 1, b := 2);\nEND_PROGRAM",
+			want: "PROGRAM p\n(* Block\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\n*)\ncal(a := 1, b := 2);\nEND_PROGRAM\n",
+		},
+		{
+			// The comment opens and closes on the long line itself, so the
+			// line after it is back outside a comment and still wrappable.
+			name: "line after a self-closed block comment is wrapped",
+			in:   "PROGRAM p\n(* a long comment that just goes on and on and on and on and on and on and on and on and on *)\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\nEND_PROGRAM",
+			want: "PROGRAM p\n(* A long comment that just goes on and on and on and on and on and on and on and on and on *)\nveryveryverylongfunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n);\nEND_PROGRAM\n",
+		},
+		{
+			name: "comment delimiter inside a string literal does not block wrapping",
+			in:   "PROGRAM p\ncal(a := 1, b := '(* not a comment', c := 2, d := 3, e := 4, f := 5, g := 6, h := 7, i := 8, j := 9, k := 10, l := 11, m := 12, n := 13, o := 14, p := 15);\nEND_PROGRAM",
+			want: "PROGRAM p\ncal(\n\ta := 1,\n\tb := '(* not a comment',\n\tc := 2,\n\td := 3,\n\te := 4,\n\tf := 5,\n\tg := 6,\n\th := 7,\n\ti := 8,\n\tj := 9,\n\tk := 10,\n\tl := 11,\n\tm := 12,\n\tn := 13,\n\to := 14,\n\tp := 15\n);\nEND_PROGRAM\n",
+		},
+		{
 			name: "ignored section survives two passes",
 			in:   "PROGRAM p\n// stformat:off\nVAR\n    ugly    :   INT;\nEND_VAR\n// stformat:on\nx:=1;\nEND_PROGRAM",
 			want: "PROGRAM p\n// stformat:off\nVAR\n    ugly    :   INT;\nEND_VAR\n// stformat:on\nx := 1;\nEND_PROGRAM\n",
