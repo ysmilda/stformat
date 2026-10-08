@@ -6,17 +6,10 @@ import "strings"
 // that occurs most often wins; a file without line breaks, or one that uses
 // both equally, reports "\n".
 func LineEnding(src string) string {
-	var crlf, lf int
-	for i := range len(src) {
-		if src[i] != '\n' {
-			continue
-		}
-		if i > 0 && src[i-1] == '\r' {
-			crlf++
-		} else {
-			lf++
-		}
-	}
+	// Counting the substrings delegates to the vectorised bytealg search
+	// instead of a byte-at-a-time loop over the whole file.
+	crlf := strings.Count(src, "\r\n")
+	lf := strings.Count(src, "\n") - crlf
 	if crlf > lf {
 		return "\r\n"
 	}

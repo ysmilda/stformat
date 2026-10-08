@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <Io Name="IO_Machine" Id="{b5c6d7e8-f901-4123-3456-7d8e9f0a1b2c}" PositionX="200" PositionY="200">
+    <ParameterList>
+      <Parameter Name="iTimeout" Value="T#500MS" />
+      <Parameter Name="bEnable" Value="TRUE" />
+    </ParameterList>
+    <Declaration><![CDATA[VAR
+	xAnalogIn AT %IW0 : INT := 0;
+	xAnalogOut AT %QW2 : INT;
+	bStart AT %IX0.0 : BOOL;
+	bStop AT %IX0.1 : BOOL;
+	xWordOut AT %QW4 : WORD;
+	xByteIn AT %IB6 : BYTE;
+END_VAR]]></Declaration>
+    <Link Name="Axis1" IODirection="Output" Instance="gAxis[1]">
+      <Adapter Name="SetVelocity" PositionX="300" PositionY="220">
+        <ParameterList>
+          <Parameter Name="Expression" Value="xAnalogOut" />
+        </ParameterList>
+      </Adapter>
+    </Link>
+  </Io>
+</TcPlcObject>

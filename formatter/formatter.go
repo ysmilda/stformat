@@ -42,6 +42,10 @@ type Formatter struct {
 	runPos    int
 	pos       int
 	blocks    []blockKind
+	// depth is the indentation level: the number of open blocks that are not
+	// POU-like. It is maintained by push/pop instead of being recounted from
+	// the stack on every line break.
+	depth     int
 	buf       strings.Builder
 	lastCh    byte
 	prevCh    byte
@@ -74,6 +78,10 @@ func newFormatter(source, ending string) *Formatter {
 		lineStart: true,
 		lastCh:    '\n',
 	}
+	// Formatting mostly preserves length and adds indentation and spacing, so
+	// the input size is a good first guess. Sizing the builder up front avoids
+	// the repeated grow-and-copy of the whole output.
+	f.buf.Grow(len(text))
 	if all, runs := scanDirectives(f.tokens); !all {
 		f.runs = runs
 	} else {
@@ -204,16 +212,11 @@ func (f *Formatter) writeCh(c byte) {
 	f.lineStart = c == '\n'
 }
 
+// indent returns the current indentation depth. It is kept as a counter
+// alongside the block stack rather than recomputed, because flush() asks for
+// it once per line break.
 func (f *Formatter) indent() int {
-	// POU-like blocks (FUNCTION/FUNCTION_BLOCK/PROGRAM/METHOD/...) do not
-	// indent their bodies: body statements sit at the POU keyword's column.
-	n := 0
-	for _, b := range f.blocks {
-		if b != bPOU {
-			n++
-		}
-	}
-	return n
+	return f.depth
 }
 
 // requestNL marks that the next content should begin on a new line.
@@ -257,11 +260,30 @@ func (f *Formatter) attach(s string) {
 }
 
 // writeRaw copies text from the source unchanged, newlines included.
+//
+// Only the tail goes through writeCh one byte at a time; the rest is handed to
+// the builder in one copy, which is what writeRaw spends its time on (ident
+// after a keyword, verbatim block, comment body).
 func (f *Formatter) writeRaw(s string) {
-	for i := range len(s) {
+	if len(s) <= tailTrackedLen {
+		for i := range len(s) {
+			f.writeCh(s[i])
+		}
+		return
+	}
+	n := len(s)
+	f.buf.WriteString(s[:n-tailTrackedLen])
+	for i := n - tailTrackedLen; i < n; i++ {
 		f.writeCh(s[i])
 	}
 }
+
+// tailTrackedLen is how many trailing bytes writeRaw still walks byte by byte.
+// Callers inspect only the last two bytes written: lastCh decides spacing and
+// lineStart, and prevCh is read by blankLineBeforeTop to spot a blank line.
+// Three bytes go through writeCh because the boundary byte has to be tracked
+// too, otherwise prevCh would hold a byte from before this call.
+const tailTrackedLen = 3
 
 // space writes a single space unless at line start or already spaced.
 func (f *Formatter) space() {
@@ -283,8 +305,14 @@ func (f *Formatter) startOwnLine() {
 	}
 }
 
+// push opens a block. POU-like blocks (FUNCTION/FUNCTION_BLOCK/PROGRAM/
+// METHOD/...) do not indent their bodies: their statements sit at the POU
+// keyword's column, so they do not raise the depth.
 func (f *Formatter) push(b blockKind) {
 	f.blocks = append(f.blocks, b)
+	if b != bPOU {
+		f.depth++
+	}
 }
 
 func (f *Formatter) pop() blockKind {
@@ -293,6 +321,9 @@ func (f *Formatter) pop() blockKind {
 	}
 	b := f.blocks[len(f.blocks)-1]
 	f.blocks = f.blocks[:len(f.blocks)-1]
+	if b != bPOU {
+		f.depth--
+	}
 	return b
 }
 

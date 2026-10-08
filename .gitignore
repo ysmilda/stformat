@@ -6,4 +6,9 @@ extension/**/bin
 extension/**/obj
 extension/**/Resources/stformat.exe
 
+# Profiles and test binary left behind by `task bench-profile`
+/cpu.out
+/mem.out
+/handlers.test
+
 .vs

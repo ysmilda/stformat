@@ -30,6 +30,20 @@ tasks:
     cmds:
       - go test -v ./...
 
+  bench:
+    desc: Run the formatter benchmarks over handlers/benchdata
+    cmds:
+      - go test ./handlers -run XXX -bench . -benchtime 200x
+
+  bench-profile:
+    desc: Run the ST benchmark and write CPU and memory profiles for pprof
+    cmds:
+      # -o pins the test binary name: go test would otherwise leave it as
+      # handlers.test.exe on Windows and pprof cannot find it by the bare name.
+      - go test ./handlers -run XXX -bench BenchmarkCorpusST -benchtime 2000x -cpuprofile cpu.out -memprofile mem.out -o handlers.test
+      - go tool pprof -top -nodecount=25 handlers.test cpu.out
+      - go tool pprof -sample_index=alloc_space -top -nodecount=25 handlers.test mem.out
+
   golden:
     desc: Regenerate golden testdata files
     cmds:

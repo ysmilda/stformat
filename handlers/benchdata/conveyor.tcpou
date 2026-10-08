@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Conveyor" Id="{7a3f2c10-4b8e-4c1a-9f20-1d5e6b7a8c90}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Conveyor
+VAR_INPUT
+	bEnable : BOOL;
+END_VAR
+VAR_OUTPUT
+	bFull : BOOL;
+	bMoving : BOOL;
+END_VAR
+VAR
+	fbAxis : FB_Axis;
+	iCount : INT;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[fbAxis(bEnable := bEnable, fVelocity := 120.0, fAcceleration := 400.0);
+bMoving := fbAxis.bBusy;
+bFull := iCount > 20;
+iCount := iCount + 1;]]></ST>
+    </Implementation>
+    <Method Name="Reset" Id="{1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9}">
+      <Declaration><![CDATA[METHOD PUBLIC Reset : BOOL
+VAR
+	i : INT;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[iCount := 0;
+bFull := FALSE;
+Reset := TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="SetSpeed" Id="{2c3d4e5f-6071-4829-93a4-b5c6d7e8f901}">
+      <Declaration><![CDATA[METHOD PUBLIC SetSpeed : BOOL
+VAR_INPUT
+	fSpeed : LREAL;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[// A speed above the mechanical limit is rejected rather
+// than passed on, so the axis never sees an unreachable target.
+IF fSpeed > 0.0 AND fSpeed <= 2000.0 THEN
+	fbAxis(bEnable := TRUE, fVelocity := fSpeed, fAcceleration := 400.0);
+	SetSpeed := TRUE;
+ELSE
+	SetSpeed := FALSE;
+END_IF]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Count" Id="{3d4e5f60-7182-493a-b4c5-d6e7f8091a2b}">
+      <Declaration><![CDATA[PROPERTY PUBLIC Count : INT]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[Count := iCount;]]></ST>
+      </Implementation>
+      <Get>
+        <Declaration><![CDATA[GET]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[]]></ST>
+        </Implementation>
+      </Get>
+      <Set>
+        <Declaration><![CDATA[SET]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+  </POU>
+  <POU Name="FB_Picker" Id="{4e5f6071-8293-4a4b-95c6-d7e8f9012a3b}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Picker
+VAR_INPUT
+	bEnable : BOOL;
+	iCode : UINT;
+END_VAR
+VAR_OUTPUT
+	bDone : BOOL;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[bDone := NOT bEnable;
+IF bEnable AND iCode = 16#0 THEN
+	bDone := TRUE;
+END_IF]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

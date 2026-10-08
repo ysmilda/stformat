@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <Gvl Name="GVL_Machine" Id="{5f607182-93a4-4b5c-a6d7-e8f9012a3b4c}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL CONSTANT
+	cAXIS_COUNT : INT := 4;
+	cDEFAULT_SPEED : LREAL := 250.0;
+	cPIPE_DIAMETER : LREAL := 40.0;
+	cMAX_CYCLE_MS : UDINT := 250;
+	cRecipeSlots : INT := 16;
+END_VAR
+
+VAR_GLOBAL
+	gAxis : ARRAY[1..cAXIS_COUNT] OF FB_Axis;
+	gRecipe : ARRAY[1..cRecipeSlots] OF ST_RecipeEntry;
+	gCycleCounter : UDINT;
+	gFirstCycleDone : BOOL;
+	gAvailability : LREAL := 100.0;
+END_VAR]]></Declaration>
+  </Gvl>
+  <Gvl Name="GVL_Constants" Id="{60718293-a4b5-4c6d-b7e8-f9012a3b4c5d}">
+    <Declaration><![CDATA[VAR_GLOBAL CONSTANT
+	cPi : LREAL := 3.14159265358979;
+	cTwoPi : LREAL := 6.28318530717959;
+	cG : LREAL := 9.80665;
+	cDegToRad : LREAL := 0.0174532925199433;
+	cEpsilon : LREAL := 0.000001;
+	cMaxNameLength : INT := 32;
+END_VAR]]></Declaration>
+  </Gvl>
+</TcPlcObject>

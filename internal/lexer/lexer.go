@@ -9,8 +9,6 @@ type Lexer struct {
 	input  string
 	pos    int
 	start  int // byte offset of the token currently being lexed
-	line   int
-	col    int
 	tokens []Token
 }
 
@@ -18,11 +16,22 @@ type Lexer struct {
 func Lex(input string) []Token {
 	l := &Lexer{
 		input: input,
-		line:  1,
-		col:   1,
+		// Sizing the slice up front keeps the append in emit from
+		// reallocating and copying the whole token stream over and over,
+		// which otherwise dominates both the allocation volume and the GC
+		// scan work.
+		tokens: make([]Token, 0, estimateTokens(len(input))),
 	}
 	l.lexAll()
 	return l.tokens
+}
+
+// estimateTokens returns how many tokens a source of n bytes is expected to
+// hold. ST measures around six bytes per token, so n/5 over-estimates slightly;
+// the slack is worth more than the few bytes of unused slice, because falling
+// short means reallocating and copying the whole token stream.
+func estimateTokens(n int) int {
+	return n / 5
 }
 
 func (l *Lexer) lexAll() {
@@ -36,8 +45,6 @@ func (l *Lexer) lexAll() {
 	l.tokens = append(l.tokens, Token{
 		Type:    TokenEOF,
 		Literal: "",
-		Line:    l.line,
-		Col:     l.col,
 		Offset:  l.pos,
 	})
 }
@@ -60,12 +67,6 @@ func (l *Lexer) peekAt(offset int) byte {
 func (l *Lexer) advance() byte {
 	ch := l.input[l.pos]
 	l.pos++
-	if ch == '\n' {
-		l.line++
-		l.col = 1
-	} else {
-		l.col++
-	}
 	return ch
 }
 
@@ -79,19 +80,22 @@ func (l *Lexer) emit(tt TokenType, literal string) {
 	l.tokens = append(l.tokens, Token{
 		Type:    tt,
 		Literal: literal,
-		Line:    l.line,
-		Col:     l.col,
 		Offset:  l.start,
 	})
 }
 
 func (l *Lexer) skipWhitespaceAndComments() {
+	// Runs of blanks are skipped in one go rather than a byte at a time.
 	for l.pos < len(l.input) {
-		ch := l.peek()
-		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
-			l.advance()
+		if charClass[l.input[l.pos]]&classSpace != 0 {
+			i := l.pos
+			for i < len(l.input) && charClass[l.input[i]]&classSpace != 0 {
+				i++
+			}
+			l.pos = i
 			continue
 		}
+		ch := l.peek()
 		if ch == '/' && l.peekAt(1) == '/' {
 			l.skipLineComment()
 			continue
@@ -110,13 +114,16 @@ func (l *Lexer) skipWhitespaceAndComments() {
 
 func (l *Lexer) skipLineComment() {
 	start := l.pos
-	l.advanceN(2) // skip //
-	for l.pos < len(l.input) && l.peek() != '\n' {
-		l.advance()
+	// The newline that ends the comment is not part of it, so the scan stops
+	// at the first one.
+	body := l.input[l.pos+2:]
+	if i := strings.IndexByte(body, '\n'); i >= 0 {
+		l.pos += 2 + i
+	} else {
+		l.pos = len(l.input)
 	}
-	// The line break itself is not part of the comment. A CR from a CRLF file
-	// must be dropped too, or it survives into the output and the formatted
-	// file ends up with mixed line endings.
+	// A CR from a CRLF file must be dropped too, or it survives into the
+	// output and the formatted file ends up with mixed line endings.
 	end := l.pos
 	if end > start && l.input[end-1] == '\r' {
 		end--
@@ -124,8 +131,6 @@ func (l *Lexer) skipLineComment() {
 	l.tokens = append(l.tokens, Token{
 		Type:    TokenLineComment,
 		Literal: l.input[start:end],
-		Line:    l.line,
-		Col:     l.col,
 		Offset:  start,
 	})
 }
@@ -150,8 +155,6 @@ func (l *Lexer) skipBlockComment() {
 	l.tokens = append(l.tokens, Token{
 		Type:    TokenBlockComment,
 		Literal: l.input[start:l.pos],
-		Line:    l.line,
-		Col:     l.col,
 		Offset:  start,
 	})
 }
@@ -176,8 +179,6 @@ func (l *Lexer) skipPragma() {
 	l.tokens = append(l.tokens, Token{
 		Type:    TokenBlockComment, // Pragmas preserved as comments
 		Literal: l.input[start:l.pos],
-		Line:    l.line,
-		Col:     l.col,
 		Offset:  start,
 	})
 }
@@ -186,16 +187,17 @@ func (l *Lexer) lex() {
 	l.start = l.pos
 	ch := l.peek()
 
-	// Check for two-character operators first
+	// Check for two-character operators first. The window is uppercased in
+	// place so no substring is allocated: this runs for every token.
 	if l.pos+1 < len(l.input) {
 		// REF= must be checked before R=.
-		if l.pos+3 < len(l.input) && strings.ToUpper(l.input[l.pos:l.pos+4]) == "REF=" {
+		if l.pos+3 < len(l.input) && equalFoldASCII(l.input[l.pos:l.pos+4], "REF=") {
 			l.advanceN(4)
 			l.emit(TokenRefAssign, "REF=")
 			return
 		}
-		two := strings.ToUpper(l.input[l.pos : l.pos+2])
-		switch two {
+		two := [2]byte{toUpperASCII(l.input[l.pos]), toUpperASCII(l.input[l.pos+1])}
+		switch string(two[:]) {
 		case ":=":
 			l.advanceN(2)
 			l.emit(TokenAssign, ":=")
@@ -449,33 +451,51 @@ func (l *Lexer) lexAddress() {
 func (l *Lexer) lexIdentOrKeyword() {
 	start := l.pos
 
-	for l.pos < len(l.input) && isIdentPart(l.peek()) {
-		l.advance()
+	// Walk the input directly instead of through peek/advance: this loop runs
+	// once per identifier byte, and the bounds check it needs is the only one
+	// that matters.
+	i := start
+	for i < len(l.input) && charClass[l.input[i]]&classIdentPart != 0 {
+		i++
 	}
+	l.pos = i
 
 	literal := l.input[start:l.pos]
-	upper := strings.ToUpper(literal)
+	// An identifier longer than maxKeywordLen cannot be a keyword or an
+	// elementary type name, so it skips the uppercase copy and the lookups.
+	// That matters because the copy is otherwise repeated for every
+	// identifier in the file, and most identifiers are not keywords.
+	if len(literal) > maxKeywordLen {
+		l.emit(TokenIdent, literal)
+		return
+	}
+
+	// Uppercase into a stack buffer rather than calling strings.ToUpper, which
+	// allocates whenever the identifier holds a lowercase letter. The keyword
+	// lookup hashes the uppercase form, so it needs no second pass.
+	var scratch [maxKeywordLen]byte
+	upper, h := upperASCII(scratch[:], literal)
+	tt, scalar, isKeyword := lookupKeywordHashed(upper, h)
 
 	// Check for typed literals: T#5s, TIME#5s, INT#42, BOOL#TRUE, STRING#'x'
 	if l.pos < len(l.input) && l.peek() == '#' {
-		timePrefix := upper == "T" || upper == "TIME" || upper == "LT" || upper == "LTIME"
-		typePrefix := IsScalarType(upper)
+		timePrefix := isTimePrefix(upper)
 
-		if timePrefix || typePrefix {
+		if timePrefix || scalar {
 			l.advance() // skip #
 			// Read the payload
-			switch upper {
-			case "STRING", "WSTRING":
+			switch {
+			case string(upper) == "STRING" || string(upper) == "WSTRING":
 				// String literal payload
 				if l.peek() == '\'' {
 					l.lexStringPayload()
 				}
-			case "BOOL":
+			case string(upper) == "BOOL":
 				// Boolean: TRUE/FALSE
 				for l.pos < len(l.input) && isIdentPart(l.peek()) {
 					l.advance()
 				}
-			case "T", "TIME", "LT", "LTIME":
+			case timePrefix:
 				l.lexTimePayload()
 			default:
 				// Numeric payload
@@ -502,7 +522,7 @@ func (l *Lexer) lexIdentOrKeyword() {
 	}
 
 	// Check for time literals: T#5s, TIME#5s, LT#5s
-	if upper == "T" || upper == "TIME" || upper == "LT" || upper == "LTIME" {
+	if isTimePrefix(upper) {
 		if l.pos < len(l.input) && l.peek() == '#' {
 			l.advance() // skip #
 			l.lexTimePayload()
@@ -512,12 +532,40 @@ func (l *Lexer) lexIdentOrKeyword() {
 	}
 
 	// Check keyword
-	if tt, ok := Keywords[upper]; ok {
+	if isKeyword {
 		l.emit(tt, literal)
 		return
 	}
 
 	l.emit(TokenIdent, literal)
+}
+
+// maxKeywordLen is the length of the longest keyword and elementary type name
+// in Keywords ("END_FUNCTION_BLOCK"). An identifier longer than this cannot be
+// either, so it needs no uppercase copy or lookup at all.
+const maxKeywordLen = len("END_FUNCTION_BLOCK")
+
+// upperASCII writes the uppercase form of s into dst and returns it together
+// with its hash, which is what the keyword table is probed with. s must not be
+// longer than dst; the caller guarantees that with maxKeywordLen.
+func upperASCII(dst []byte, s string) ([]byte, uint32) {
+	h := uint32(2166136261)
+	for i := range len(s) {
+		c := toUpperASCII(s[i])
+		dst[i] = c
+		h = (h ^ uint32(c)) * 16777619
+	}
+	return dst[:len(s)], h
+}
+
+// isTimePrefix reports whether an uppercased identifier prefixes a duration
+// literal (T#5s, TIME#5s, LT#5s, LTIME#5s).
+func isTimePrefix(upper []byte) bool {
+	switch string(upper) {
+	case "T", "TIME", "LT", "LTIME":
+		return true
+	}
+	return false
 }
 
 // lexTimePayload consumes the components of a duration literal such as
@@ -584,12 +632,45 @@ func (l *Lexer) lexStringPayload() {
 	}
 }
 
+// toUpperASCII uppercases a single byte. ST identifiers and operators are
+// ASCII, so this is enough and it avoids the allocation strings.ToUpper makes
+// whenever the input has a lowercase letter.
+func toUpperASCII(ch byte) byte {
+	if ch >= 'a' && ch <= 'z' {
+		return ch - 'a' + 'A'
+	}
+	return ch
+}
+
+// equalFoldASCII reports whether s equals upper, comparing ASCII letters
+// case-insensitively. s must already have len(upper) bytes.
+func equalFoldASCII(s string, upper string) bool {
+	for i := range len(upper) {
+		if toUpperASCII(s[i]) != upper[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func isDigit(ch byte) bool {
-	return ch >= '0' && ch <= '9'
+	return charClass[ch]&classDigit != 0
 }
 
 func isHexDigit(ch byte) bool {
-	return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F') || (ch >= 'a' && ch <= 'f')
+	return charClass[ch]&classHexDigit != 0
+}
+
+// The Raw variants hold the plain range tests that build charClass, and are
+// the reference the table is built from.
+func isDigitRaw(ch byte) bool { return ch >= '0' && ch <= '9' }
+
+func isHexDigitRaw(ch byte) bool {
+	return isDigitRaw(ch) || (ch >= 'A' && ch <= 'F') || (ch >= 'a' && ch <= 'f')
+}
+
+func isIdentStartRaw(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
 }
 
 func isBaseDigit(ch byte, base int) bool {
@@ -607,16 +688,48 @@ func isBaseDigit(ch byte, base int) bool {
 }
 
 func isIdentStart(ch byte) bool {
-	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+	return charClass[ch]&classIdentStart != 0
 }
 
 func isIdentPart(ch byte) bool {
-	return isIdentStart(ch) || isDigit(ch)
+	return charClass[ch]&classIdentPart != 0
+}
+
+// Character classes, as bits in charClass. The lexer tests these once per
+// source byte, so a table lookup replaces the range comparisons.
+const (
+	classIdentStart = 1 << iota
+	classIdentPart
+	classDigit
+	classHexDigit
+	classSpace
+)
+
+var charClass = buildCharClass()
+
+func buildCharClass() [256]uint8 {
+	var t [256]uint8
+	for ch := range 256 {
+		b := byte(ch)
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			t[ch] |= classSpace
+		}
+		if isDigitRaw(b) {
+			t[ch] |= classDigit | classIdentPart
+		}
+		if isHexDigitRaw(b) {
+			t[ch] |= classHexDigit
+		}
+		if isIdentStartRaw(b) {
+			t[ch] |= classIdentStart | classIdentPart
+		}
+	}
+	return t
 }
 
 // isTimeUnitChar reports whether ch may appear in the unit part of a duration
 // literal (T#1h30m, LT#2d12h, TIME#500ms). Units are single letters with
 // optional prefixes: d, h, m, s, ms, us, ns. Literals are case insensitive.
 func isTimeUnitChar(ch byte) bool {
-	return strings.ContainsRune("dhmsunDHMSUN", rune(ch))
+	return strings.IndexByte("dhmsunDHMSUN", ch) >= 0
 }
