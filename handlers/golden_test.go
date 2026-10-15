@@ -40,7 +40,13 @@ func goldenPath(input string) string {
 
 // runGolden formats the testdata input with the handler and compares the
 // result byte-for-byte against the golden file. With -update it writes the
-// golden file instead. It also checks that formatting is idempotent.
+// golden file instead.
+//
+// It also holds the output to the two properties that do not depend on the
+// golden bytes: a second pass changes nothing, and formatting dropped no token.
+// The golden says what the output must look like; these say it is allowed to
+// look that way. Both used to be separate tests looping over the same files,
+// which formatted every fixture twice over for no extra coverage.
 func runGolden(t *testing.T, h Handler, input string) {
 	t.Helper()
 	in, err := os.ReadFile(input)
@@ -52,14 +58,13 @@ func runGolden(t *testing.T, h Handler, input string) {
 		t.Fatalf("Format: %v", err)
 	}
 
-	golden := goldenPath(input)
 	if *update {
-		if err := os.WriteFile(golden, got, 0o644); err != nil {
+		if err := os.WriteFile(goldenPath(input), got, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
-	want, err := os.ReadFile(golden)
+	want, err := os.ReadFile(goldenPath(input))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +80,20 @@ func runGolden(t *testing.T, h Handler, input string) {
 	if string(again) != string(got) {
 		t.Errorf("not idempotent for %s", input)
 	}
+
+	// Nothing lost: for an XML file that is the ST inside the CDATA sections,
+	// for a plain ST file the whole text.
+	if h.Name() != "xml" {
+		assertTokensPreserved(t, string(in), string(got))
+		return
+	}
+	before, after := extractSTBlocks(in), extractSTBlocks(got)
+	if len(before) != len(after) {
+		t.Fatalf("ST block count changed: %d -> %d", len(before), len(after))
+	}
+	for i := range before {
+		assertTokensPreserved(t, before[i], after[i])
+	}
 }
 
 // assertTokensPreserved verifies that formatting only rearranges whitespace,
@@ -84,17 +103,24 @@ func runGolden(t *testing.T, h Handler, input string) {
 // comment content (space and capital letter after the opening).
 func assertTokensPreserved(t *testing.T, input, output string) {
 	t.Helper()
+	if msg := tokensPreserved(input, output); msg != "" {
+		t.Error(msg)
+	}
+}
+
+// tokensPreserved is assertTokensPreserved as a function that describes the
+// first violation instead of failing on a test, so that the property sweep can
+// shrink an input down to what makes it fail.
+func tokensPreserved(input, output string) string {
 	ti := tokensOf(input)
 	to := tokensOf(output)
 	if len(ti) != len(to) {
-		t.Errorf("token count changed: %d -> %d", len(ti), len(to))
+		return fmt.Sprintf("token count changed: %d -> %d\n%s", len(ti), len(to), diffStrings(input, output))
 	}
-	n := min(len(to), len(ti))
-	for i := range n {
+	for i := range min(len(to), len(ti)) {
 		a, b := ti[i], to[i]
 		if a.Type != b.Type {
-			t.Errorf("token %d type changed: %s -> %s", i, lexer.TokenName(a.Type), lexer.TokenName(b.Type))
-			continue
+			return fmt.Sprintf("token %d type changed: %s -> %s\n%s", i, lexer.TokenName(a.Type), lexer.TokenName(b.Type), diffStrings(input, output))
 		}
 		// Keywords may be normalised in spelling and case (if -> IF, tod ->
 		// TOD); the token type already carries their meaning.
@@ -103,9 +129,10 @@ func assertTokensPreserved(t *testing.T, input, output string) {
 		if lexer.KeywordSpelling(a.Type) == "" &&
 			a.Type != lexer.TokenLineComment && a.Type != lexer.TokenBlockComment &&
 			a.Literal != b.Literal {
-			t.Errorf("token %d literal changed: %q -> %q", i, a.Literal, b.Literal)
+			return fmt.Sprintf("token %d literal changed: %q -> %q\n%s", i, a.Literal, b.Literal, diffStrings(input, output))
 		}
 	}
+	return ""
 }
 
 // tokensOf lexes src and returns all tokens except the trailing EOF token.

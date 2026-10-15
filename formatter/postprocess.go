@@ -10,6 +10,8 @@ import (
 //  1. Long-line wrapping for function/FB calls with multiple arguments
 //  2. Long-line wrapping for IF/ELSIF conditions at AND/OR/XOR operators,
 //     recursively breaking open parenthesised operands
+//  3. The same one-member-per-line layout for a TYPE's value list, whether the
+//     list opens the line or an earlier one already opened it
 //
 // Nothing is aligned: declarations and assignments keep the single space that
 // the token pass put around ':' and ':='. A comment at the end of a line never
@@ -23,6 +25,10 @@ func PostProcess(output string) string {
 		bc       blockComments
 		ignoring bool
 		leading  = true // still inside the leading comment block
+		// depth counts the brackets that earlier lines left open, so that a
+		// list broken over several lines is known to be open when the line that
+		// closes it is reached.
+		depth int
 	)
 
 	// The lines are walked in place rather than split into a []string. Every
@@ -39,12 +45,12 @@ func PostProcess(output string) string {
 		}
 		line := output[pos:lineEnd]
 
-		// Directive and block-comment state only move on a line that can carry a
-		// comment delimiter. A single vectorised byte search decides whether
-		// the two of them are worth looking at; running the searches per
-		// delimiter instead costs more than the scans it saves, because the
-		// call overhead dominates on lines of a few dozen bytes.
-		if mayCarryComment(line) {
+		// Directive, block-comment and bracket state only move on a line that
+		// can carry a comment delimiter or a bracket. A single vectorised byte
+		// search decides whether they are worth looking at; running the
+		// searches per delimiter instead costs more than the scans it saves,
+		// because the call overhead dominates on lines of a few dozen bytes.
+		if mayCarryStructure(line) {
 			switch lineDirective(line) {
 			case directiveIgnore:
 				ignoring = leading
@@ -53,7 +59,14 @@ func PostProcess(output string) string {
 			case directiveOn:
 				ignoring = false
 			}
+			inComment := bc.open
 			bc.scan(line)
+			// Only structure moves the count. A bracket that is text - inside a
+			// comment, a string literal or an ignored region - does not open a
+			// level, so it must not feed what the next line inherits.
+			if !inComment && !ignoring {
+				depth += bracketDelta(line)
+			}
 		}
 		verbatim := ignoring
 		if leading {
@@ -62,7 +75,7 @@ func PostProcess(output string) string {
 			}
 		}
 
-		if r.reflow(line, verbatim, bc.open) {
+		if r.reflow(line, verbatim, bc.open, depth) {
 			if !wrapped {
 				b.Grow(len(output) + len(output)/4 + 64)
 				b.WriteString(output[:pos])
@@ -90,13 +103,51 @@ func PostProcess(output string) string {
 
 // --------------- ignored regions ---------------
 
-// mayCarryComment reports whether line holds any of the bytes that a line
-// comment, a block comment or a directive can be built from. A line with none
-// of them cannot open or close a comment and cannot carry a directive.
-func mayCarryComment(line string) bool {
+// mayCarryStructure reports whether line holds any of the bytes that a line
+// comment, a block comment, a directive or a bracket can be built from. A line
+// with none of them cannot open or close a comment, cannot carry a directive
+// and cannot move the bracket count.
+func mayCarryStructure(line string) bool {
 	return strings.IndexByte(line, '/') >= 0 ||
 		strings.IndexByte(line, '(') >= 0 ||
-		strings.IndexByte(line, '*') >= 0
+		strings.IndexByte(line, '*') >= 0 ||
+		strings.IndexByte(line, ')') >= 0
+}
+
+// bracketDelta returns how many brackets the line leaves open: the '(' it
+// writes minus the ')' it closes. A bracket inside a string literal or a
+// comment is text and does not count, so a line that runs into an unterminated
+// one counts only what came before it.
+func bracketDelta(line string) int {
+	depth := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '\'', '"':
+			// Jump past the literal; it may hold brackets.
+			i = skipQuoted(line, i) - 1
+		case '/':
+			if i+1 < len(line) && line[i+1] == '/' {
+				return depth
+			}
+		case '(':
+			if i+1 < len(line) && line[i+1] == '*' {
+				j := strings.Index(line[i+2:], "*)")
+				if j < 0 {
+					// The comment runs on into the next line, which is
+					// skipped whole while the count stays where it is.
+					return depth
+				}
+				i += 2 + j + 1
+				continue
+			}
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
 }
 
 // blockComments tracks whether a line-by-line scan has entered a (* ... *)
@@ -122,12 +173,15 @@ const maxLineLen = 120
 // whether it did.
 //
 // A line is only a candidate when its code exceeds maxLineLen and carries a
-// multi-argument function/FB call or a splittable IF/ELSIF condition.
-// Comment-only lines, lines with an unterminated string literal and lines
-// inside an ignored region are never reflowed. A comment at the end of a line
-// does not count towards the length and stays at the end of the last line that
-// the reflow produces.
-func (r *reflower) reflow(line string, verbatim, inBlockComment bool) bool {
+// multi-argument function/FB call, a value list or a splittable IF/ELSIF
+// condition. Comment-only lines, lines with an unterminated string literal and
+// lines inside an ignored region are never reflowed. A comment at the end of a
+// line does not count towards the length and stays at the end of the last line
+// that the reflow produces.
+//
+// depth is how many brackets earlier lines left open, which says whether a
+// ')' at the end of this line closes one of them.
+func (r *reflower) reflow(line string, verbatim, inBlockComment bool, depth int) bool {
 	// A line within the limit can never be reflowed, and every remaining check
 	// walks it, so this shortcut carries most lines of a typical file.
 	if len(line) <= maxLineLen {
@@ -142,7 +196,7 @@ func (r *reflower) reflow(line string, verbatim, inBlockComment bool) bool {
 		return false
 	}
 	r.lines = r.lines[:0]
-	if !r.wrapIf(code) && !r.wrapStatement(code) {
+	if !r.wrapIf(code) && !r.wrapStatement(code, depth) {
 		return false
 	}
 	if comment != "" {
@@ -251,9 +305,14 @@ func hasOpenQuote(s string) bool {
 }
 
 // wrapStatement lays out a single long statement line by placing each argument
-// of the outermost call on its own line. It reports whether it wrote a
+// of the outermost list on its own line. It reports whether it wrote a
 // replacement.
-func (r *reflower) wrapStatement(line string) bool {
+//
+// Three shapes are laid out the same way: a call's argument list, the value
+// list of a TYPE, and either of those continued from a line that opened the
+// bracket. A list that opens the line keeps its bracket, a continued one leaves
+// it to the line above.
+func (r *reflower) wrapStatement(line string, depth int) bool {
 	trimmed := strings.TrimSpace(line)
 	if len(trimmed) == 0 {
 		return false
@@ -267,36 +326,50 @@ func (r *reflower) wrapStatement(line string) bool {
 	stmt := trimmed[:semi]
 	suffix := trimmed[semi:] // ";" or ";..."
 
-	// Find the last (...) in the statement — the outermost call.
+	// Find the last (...) in the statement — the outermost list.
 	open, close := findLastCallParens(stmt)
-	if open < 0 || close <= open {
+	if close <= 0 {
 		return false
 	}
 
-	// Only wrap genuine call argument lists: the '(' must directly follow
-	// an identifier, ')' or ']' (e.g. `foo(`, `obj.foo(`). Parenthesized
-	// sub-expressions and array-literal elements such as `[... (a := 1)]`
-	// must not be treated as calls.
-	if open == 0 {
-		return false
-	}
-	if c := stmt[open-1]; !isIdentChar(c) && c != ')' && c != ']' {
-		return false
+	callPrefix := ""
+	switch {
+	case open < 0:
+		// The bracket this line closes was opened by an earlier one. Without
+		// an open level to continue there is nothing to lay out: the ')' is
+		// stray text rather than the end of a list.
+		if depth <= 0 {
+			return false
+		}
+	case open > 0:
+		// Only wrap genuine call argument lists: the '(' must directly follow
+		// an identifier, ')' or ']' (e.g. `foo(`, `obj.foo(`). Parenthesized
+		// sub-expressions and array-literal elements such as `[... (a := 1)]`
+		// must not be treated as calls.
+		if c := stmt[open-1]; !isIdentChar(c) && c != ')' && c != ']' {
+			return false
+		}
+		callPrefix = strings.TrimSpace(stmt[:open])
 	}
 
 	// Extract arguments and split by top-level commas.
-	args := r.splitArgs(stmt[open+1 : close])
+	first := 0
+	if open >= 0 {
+		first = open + 1
+	}
+	args := r.splitArgs(stmt[first:close])
 	if len(args) <= 1 {
 		return false
 	}
 
 	indent := lineIndent(line)
-	callPrefix := strings.TrimSpace(stmt[:open])
-	tail := stmt[close+1:] // content after the call's ')' up to the ';'
+	tail := stmt[close+1:] // content after the list's ')' up to the ';'
 
-	r.write(indent)
-	r.write(callPrefix)
-	r.write("(")
+	if open >= 0 {
+		r.write(indent)
+		r.write(callPrefix)
+		r.write("(")
+	}
 	for i, a := range args {
 		r.newLine()
 		r.write(indent)
@@ -383,8 +456,9 @@ func skipQuotedStart(s string, i int) int {
 	return 0
 }
 
-// findLastCallParens finds the matching ( and ) of the last call
-// in stmt. Returns (open, close) indices or (-1, -1).
+// findLastCallParens finds the matching ( and ) of the last list
+// in stmt. Returns (open, close) indices or (-1, -1). An open of -1 with a
+// close of its own means the ')' closes a bracket that an earlier line opened.
 func findLastCallParens(stmt string) (int, int) {
 	for i := len(stmt) - 1; i >= 0; i-- {
 		switch stmt[i] {
@@ -397,7 +471,8 @@ func findLastCallParens(stmt string) (int, int) {
 	return -1, -1
 }
 
-// matchParens walks back from the ')' at close to its opening '('.
+// matchParens walks back from the ')' at close to its opening '('. It returns
+// (-1, close) when the line holds no matching '('.
 func matchParens(stmt string, close int) (int, int) {
 	depth := 1
 	for i := close - 1; i >= 0; i-- {
@@ -413,7 +488,7 @@ func matchParens(stmt string, close int) (int, int) {
 			}
 		}
 	}
-	return -1, -1
+	return -1, close
 }
 
 // --------------- long IF/ELSIF wrapping ---------------

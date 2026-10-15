@@ -19,5 +19,15 @@ VAR
 	ldtVal : LDT := LDT#2024-06-15-12:30:45.123;
 	str1 : STRING := 'plain';
 	str2 : WSTRING := "line1$R$Nline2";
+	str3 : STRING := STRING#'typed';
+	str4 : STRING := STRING#"typed";
+	str5 : WSTRING := WSTRING#'typed';
+	str6 : WSTRING := WSTRING#"typed";
+	ch1 : CHAR := CHAR#'a';
+	ch2 : CHAR := CHAR#"b";
+	wch1 : WCHAR := WCHAR#"ab";
+	sep : LREAL := 1_0E1_0;
+	expSep : LREAL := 1.5E1_0;
+	negDur : LTIME := LTIME#-5s;
 END_VAR
 END_PROGRAM

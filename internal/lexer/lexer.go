@@ -189,11 +189,15 @@ func (l *Lexer) lex() {
 
 	// Check for two-character operators first. The window is uppercased in
 	// place so no substring is allocated: this runs for every token.
+	//
+	// The output bindings keep the spelling they were written with: unlike a
+	// keyword they are not one spelling of one word, and both S= and s= are
+	// what TwinCAT and CODESYS accept.
 	if l.pos+1 < len(l.input) {
 		// REF= must be checked before R=.
 		if l.pos+3 < len(l.input) && equalFoldASCII(l.input[l.pos:l.pos+4], "REF=") {
 			l.advanceN(4)
-			l.emit(TokenRefAssign, "REF=")
+			l.emit(TokenRefAssign, l.input[l.start:l.pos])
 			return
 		}
 		two := [2]byte{toUpperASCII(l.input[l.pos]), toUpperASCII(l.input[l.pos+1])}
@@ -228,11 +232,11 @@ func (l *Lexer) lex() {
 			return
 		case "S=":
 			l.advanceN(2)
-			l.emit(TokenSAssign, "S=")
+			l.emit(TokenSAssign, l.input[l.start:l.pos])
 			return
 		case "R=":
 			l.advanceN(2)
-			l.emit(TokenRAssign, "R=")
+			l.emit(TokenRAssign, l.input[l.start:l.pos])
 			return
 		}
 	}
@@ -329,21 +333,34 @@ func (l *Lexer) lexString(wide bool) {
 	if wide {
 		quote = '"'
 	}
+	l.scanStringBody(quote)
+	l.emit(TokenString, l.input[start:l.pos])
+}
+
+// scanStringBody consumes a quoted literal from its opening quote up to and
+// including its closing one. Two escapes keep a quote from ending the literal:
+// a '$' takes the byte behind it, and a doubled quote is a quote in the text.
+// A literal that never closes ends at the end of the input.
+func (l *Lexer) scanStringBody(quote byte) {
 	l.advance() // skip opening quote
-	for l.pos < len(l.input) && l.peek() != quote {
-		if l.peek() == '$' {
+	for l.pos < len(l.input) {
+		switch l.peek() {
+		case '$':
 			l.advance() // skip $
 			if l.pos < len(l.input) {
 				l.advance() // skip escape char
 			}
-			continue
+		case quote:
+			if l.peekAt(1) == quote {
+				l.advanceN(2) // an escaped quote, not the end
+				continue
+			}
+			l.advance() // skip closing quote
+			return
+		default:
+			l.advance()
 		}
-		l.advance()
 	}
-	if l.pos < len(l.input) {
-		l.advance() // skip closing quote
-	}
-	l.emit(TokenString, l.input[start:l.pos])
 }
 
 func (l *Lexer) lexNumber() {
@@ -384,7 +401,8 @@ func (l *Lexer) lexNumber() {
 		}
 	}
 
-	// Check for exponent
+	// Check for exponent. The exponent takes the same digit separators as the
+	// mantissa, so 1_0E1_0 is one number.
 	if l.peek() == 'e' || l.peek() == 'E' {
 		p := l.pos + 1
 		if p < len(l.input) && (l.input[p] == '+' || l.input[p] == '-') {
@@ -395,7 +413,7 @@ func (l *Lexer) lexNumber() {
 			if l.peek() == '+' || l.peek() == '-' {
 				l.advance()
 			}
-			for l.pos < len(l.input) && isDigit(l.peek()) {
+			for l.pos < len(l.input) && (isDigit(l.peek()) || l.peek() == '_') {
 				l.advance()
 			}
 		}
@@ -485,11 +503,10 @@ func (l *Lexer) lexIdentOrKeyword() {
 			l.advance() // skip #
 			// Read the payload
 			switch {
-			case string(upper) == "STRING" || string(upper) == "WSTRING":
-				// String literal payload
-				if l.peek() == '\'' {
-					l.lexStringPayload()
-				}
+			case isQuotedType(upper) && (l.peek() == '\'' || l.peek() == '"'):
+				// String and character payload: a quoted literal in either
+				// quote style (STRING#'x', WSTRING#"x", CHAR#'a', WCHAR#"ab").
+				l.lexStringPayload()
 			case string(upper) == "BOOL":
 				// Boolean: TRUE/FALSE
 				for l.pos < len(l.input) && isIdentPart(l.peek()) {
@@ -510,7 +527,7 @@ func (l *Lexer) lexIdentOrKeyword() {
 					}
 					if p < len(l.input) && isDigit(l.input[p]) {
 						l.pos = p + 1
-						for l.pos < len(l.input) && isDigit(l.peek()) {
+						for l.pos < len(l.input) && (isDigit(l.peek()) || l.peek() == '_') {
 							l.pos++
 						}
 					}
@@ -616,20 +633,22 @@ func startsTimeComponent(s string, i int) bool {
 	return i < len(s) && isDigit(s[i])
 }
 
+// lexStringPayload consumes the quoted payload of a typed string or character
+// literal (STRING#'x', WSTRING#"x", CHAR#'a', WCHAR#"ab"), from the opening
+// quote onwards.
 func (l *Lexer) lexStringPayload() {
-	for l.pos < len(l.input) && l.peek() != '\'' {
-		if l.peek() == '$' {
-			l.advance() // skip $
-			if l.pos < len(l.input) {
-				l.advance() // skip escape char
-			}
-		} else {
-			l.advance()
-		}
+	l.scanStringBody(l.peek())
+}
+
+// isQuotedType reports whether an uppercased elementary type name takes a
+// quoted literal as the payload of a typed literal. The others take a number,
+// a duration or a boolean.
+func isQuotedType(upper []byte) bool {
+	switch string(upper) {
+	case "STRING", "WSTRING", "CHAR", "WCHAR":
+		return true
 	}
-	if l.pos < len(l.input) {
-		l.advance() // skip closing '
-	}
+	return false
 }
 
 // toUpperASCII uppercases a single byte. ST identifiers and operators are

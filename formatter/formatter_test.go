@@ -254,6 +254,57 @@ func TestFormatIDs(t *testing.T) {
 			in:   "PROGRAM p\nx:=1; // STFormat : Off\n    y   :=   2;\n// stformat:on\nz:=3;\nEND_PROGRAM",
 			want: "PROGRAM p\nx := 1;  // STFormat : Off\n    y   :=   2;\n// stformat:on\nz := 3;\nEND_PROGRAM\n",
 		},
+		{
+			// A typed literal runs from its type name to its closing quote,
+			// whichever quote it uses. Reading only up to the opening one leaves
+			// the text behind to be lexed as code.
+			name: "typed string and character literals keep their payload",
+			in:   "PROGRAM p\nVAR\n a: string := STRING#'typed';\n b: wstring := STRING#\"typed\";\n c: char := CHAR#'a';\n d: wchar := WCHAR#\"ab\";\nEND_VAR\nEND_PROGRAM",
+			want: "PROGRAM p\nVAR\n\ta : STRING := STRING#'typed';\n\tb : WSTRING := STRING#\"typed\";\n\tc : CHAR := CHAR#'a';\n\td : WCHAR := WCHAR#\"ab\";\nEND_VAR\nEND_PROGRAM\n",
+		},
+		{
+			// A doubled quote is a quote in the text, not the end of the
+			// literal. Stopping at the first one puts a blank inside quoted text.
+			name: "doubled quote inside a literal is not the end of it",
+			in:   "PROGRAM p\nVAR\n a: string := 'don''t';\n b: wstring := \"say \"\"hi\"\"\";\n c: string := STRING#'it''s';\nEND_VAR\nEND_PROGRAM",
+			want: "PROGRAM p\nVAR\n\ta : STRING := 'don''t';\n\tb : WSTRING := \"say \"\"hi\"\"\";\n\tc : STRING := STRING#'it''s';\nEND_VAR\nEND_PROGRAM\n",
+		},
+		{
+			// The output bindings are operators rather than keywords, and both
+			// S= and s= are accepted, so the spelling of the source is kept.
+			name: "output bindings keep the case they were written with",
+			in:   "PROGRAM p\nVAR\n b: bool;\nEND_VAR\nb s= TRUE;\nb r= FALSE;\nb ref= b;\nEND_PROGRAM",
+			want: "PROGRAM p\nVAR\n\tb : BOOL;\nEND_VAR\n\nb s= TRUE;\nb r= FALSE;\nb ref= b;\nEND_PROGRAM\n",
+		},
+		{
+			// END_PROGRAM ends no statement, so nothing before the comment
+			// asked for a line break and the comment would be glued to it.
+			name: "comment on its own line after a block end keeps its line",
+			in:   "PROGRAM p\nx:=1;\nEND_PROGRAM\n// a comment about the program\nFUNCTION f\nEND_FUNCTION",
+			want: "PROGRAM p\nx := 1;\nEND_PROGRAM\n// A comment about the program\n\nFUNCTION f\nEND_FUNCTION\n",
+		},
+		{
+			// A TYPE body is a list of values like a call's argument list, so
+			// it breaks at the same limit into the same layout.
+			name: "long type value list breaks one member per line",
+			in:   "TYPE states :\n(A := 0, B := 1, C := 2, D := 3, E := 4, F := 5, G := 6, H := 7, I := 8, J := 9, K := 10, L := 11, M := 12, N := 13, O := 14, P := 15);\nEND_TYPE",
+			want: "TYPE states :\n\t(\n\t\tA := 0,\n\t\tB := 1,\n\t\tC := 2,\n\t\tD := 3,\n\t\tE := 4,\n\t\tF := 5,\n\t\tG := 6,\n\t\tH := 7,\n\t\tI := 8,\n\t\tJ := 9,\n\t\tK := 10,\n\t\tL := 11,\n\t\tM := 12,\n\t\tN := 13,\n\t\tO := 14,\n\t\tP := 15\n\t);\nEND_TYPE\n",
+		},
+		{
+			// The list was opened on the line above, which carries the comment.
+			// The bracket stays where it is and only the members break.
+			name: "type value list continued from the line above breaks its members",
+			in:   "TYPE continued :\n(  // the names\n\tA := 0, B := 1, C := 2, D := 3, E := 4, F := 5, G := 6, H := 7, I := 8, J := 9, K := 10, L := 11, M := 12, N := 13, O := 14, P := 15\n);\nEND_TYPE",
+			want: "TYPE continued :\n\t(  // The names\n\t\tA := 0,\n\t\tB := 1,\n\t\tC := 2,\n\t\tD := 3,\n\t\tE := 4,\n\t\tF := 5,\n\t\tG := 6,\n\t\tH := 7,\n\t\tI := 8,\n\t\tJ := 9,\n\t\tK := 10,\n\t\tL := 11,\n\t\tM := 12,\n\t\tN := 13,\n\t\tO := 14,\n\t\tP := 15\n\t);\nEND_TYPE\n",
+		},
+		{
+			// The line is over the limit, but the ')' it ends with closes
+			// nothing: without a level carried over from an earlier line there
+			// is no list to break up.
+			name: "stray closing bracket with no level open is not a list",
+			in:   "PROGRAM q\ny := aaaaaaaaaaaaaaaaaaaaaa + bbbbbbbbbbbbbbbbbbbbbbbb + cccccccccccccccccccccccc + dddddddddddddddddddddddd + eeeee);\nEND_PROGRAM",
+			want: "PROGRAM q\ny := aaaaaaaaaaaaaaaaaaaaaa + bbbbbbbbbbbbbbbbbbbbbbbb + cccccccccccccccccccccccc + dddddddddddddddddddddddd + eeeee);\nEND_PROGRAM\n",
+		},
 	}
 
 	for _, c := range cases {
@@ -341,6 +392,29 @@ func TestIdempotentRegression(t *testing.T) {
 			name: "ignored section",
 			in: "PROGRAM p\n" +
 				"// stformat:off\nVAR\n    ugly    :   INT;\nEND_VAR\n// stformat:on\nIF a > 0 THEN b := a; END_IF\nEND_PROGRAM\n",
+		},
+		{
+			// The closing quote of a typed literal used to be missed, which
+			// left the rest of the file to be lexed as string content.
+			name: "typed literals",
+			in: "PROGRAM p\n" +
+				"VAR\n a: string := STRING#'x';\n b: string := STRING#\"y\";\n c: char := CHAR#'z';\nEND_VAR\n" +
+				"a := 'x';\nEND_PROGRAM\n",
+		},
+		{
+			name: "value list continued from the line above",
+			in: "TYPE continued :\n" +
+				"(  // the names\n" +
+				"\tA := 0, B := 1, C := 2, D := 3, E := 4, F := 5, G := 6, H := 7, I := 8, J := 9, K := 10, L := 11, M := 12, N := 13, O := 14, P := 15\n" +
+				");\nEND_TYPE\n",
+			wraps: true,
+		},
+		{
+			name: "comment between two pous",
+			in: "PROGRAM p\n" +
+				"x:=1;\nEND_PROGRAM\n" +
+				"// about the next one\n" +
+				"FUNCTION f\nEND_FUNCTION\n",
 		},
 	}
 	for _, c := range cases {

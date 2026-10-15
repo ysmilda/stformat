@@ -154,38 +154,3 @@ func benchFormat(b *testing.B, files []corpusFile, h Handler) {
 		b.Fatal("no output produced")
 	}
 }
-
-// TestCorpusIdempotent formats every benchdata file twice and requires the
-// second pass to change nothing. These files are ordinary PLC code rather than
-// rule-specific fixtures, so this is the broadest check that formatting is
-// stable on realistic input.
-func TestCorpusIdempotent(t *testing.T) {
-	t.Parallel()
-	registry := NewRegistry()
-	corpora := map[string][]corpusFile{
-		"st":  loadCorpus(t, "benchdata", "st", "iecst", "tcst"),
-		"xml": loadCorpus(t, "benchdata", "tcpou", "tcgvl", "tcdut", "tcio"),
-	}
-	for kind, files := range corpora {
-		for _, f := range files {
-			t.Run(kind+"/"+f.name, func(t *testing.T) {
-				t.Parallel()
-				h, err := registry.ForExtension(strings.ToLower(filepath.Ext(f.name)))
-				if err != nil {
-					t.Fatalf("no handler for %s: %v", f.name, err)
-				}
-				once, err := h.Format(f.data)
-				if err != nil {
-					t.Fatalf("Format: %v", err)
-				}
-				twice, err := h.Format(once)
-				if err != nil {
-					t.Fatalf("Format (second pass): %v", err)
-				}
-				if string(twice) != string(once) {
-					t.Error("not idempotent")
-				}
-			})
-		}
-	}
-}

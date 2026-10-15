@@ -1055,12 +1055,6 @@ func tokenSpelling(tok lexer.Token) string {
 		return "**"
 	case lexer.TokenDotDot:
 		return ".."
-	case lexer.TokenSAssign:
-		return "S="
-	case lexer.TokenRAssign:
-		return "R="
-	case lexer.TokenRefAssign:
-		return "REF="
 	}
 	return tok.Literal
 }
@@ -1123,6 +1117,12 @@ func (f *Formatter) emitComment(tok lexer.Token) {
 		f.pendingBlank = false
 		f.writeCh(' ')
 		f.writeCh(' ')
+	} else {
+		// The comment stands on its own line in the source, so it keeps a line
+		// of its own here too. The token before it may not have asked for one:
+		// END_PROGRAM ends no statement, and a keyword that starts with a
+		// space (PUBLIC) swallows the break that follows a POU header.
+		f.startOwnLine()
 	}
 	f.attach(lit)
 	f.requestNL()
