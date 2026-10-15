@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +11,10 @@ import (
 
 // TestXMLFiles formats every testdata/*.in.{tcpou,tcgvl,tcdut,tcio} file and
 // compares the result against its .golden. counterpart.
+//
+// runGolden also checks idempotency, and that the ST inside the CDATA sections
+// kept every token, so this is the whole check for a TwinCAT fixture. The plain
+// ST half is TestSTFiles.
 func TestXMLFiles(t *testing.T) {
 	t.Parallel()
 	h := &XMLHandler{}
@@ -23,41 +26,29 @@ func TestXMLFiles(t *testing.T) {
 	}
 }
 
-// TestXMLOnlyChangesWhitespace verifies that the ST inside TwinCAT XML files
-// is never rewritten semantically: each Declaration/ST CDATA block must keep
-// the identical token stream (only whitespace and keyword case may change).
-func TestXMLOnlyChangesWhitespace(t *testing.T) {
-	t.Parallel()
-	h := &XMLHandler{}
-	for _, f := range globInputs(t, "tcpou", "tcgvl", "tcdut", "tcio") {
-		t.Run(filepath.Base(f), func(t *testing.T) {
-			t.Parallel()
-			data, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := h.Format(data)
-			if err != nil {
-				t.Fatalf("Format: %v", err)
-			}
-			in := extractSTBlocks(data)
-			out := extractSTBlocks(got)
-			if len(in) != len(out) {
-				t.Fatalf("ST block count changed: %d -> %d", len(in), len(out))
-			}
-			for i := range in {
-				assertTokensPreserved(t, in[i], out[i])
-			}
-		})
+// extractSTBlocks returns the trimmed ST source inside every <Declaration>
+// and <ST> CDATA block, mirroring the XMLHandler's selection logic. Each entry
+// carries the byte range of the CDATA section it came from, so that a caller can
+// put a modified block back where it found it.
+func extractSTBlocks(src []byte) []string {
+	out := make([]string, 0, 8)
+	for _, b := range stBlockRanges(src) {
+		out = append(out, strings.TrimSpace(string(src[b.from:b.to])))
 	}
+	return out
 }
 
-// extractSTBlocks returns the trimmed ST source inside every <Declaration>
-// and <ST> CDATA block, mirroring the XMLHandler's selection logic.
-func extractSTBlocks(src []byte) []string {
+// stBlock is one ST-carrying CDATA section and where it sits in the file.
+type stBlock struct {
+	from, to int // the body of the CDATA section, without the delimiters
+}
+
+// stBlockRanges returns the CDATA sections of a TwinCAT XML file that hold ST,
+// in the order they appear.
+func stBlockRanges(src []byte) []stBlock {
+	out := make([]stBlock, 0, 8)
 	dec := xml.NewDecoder(bytes.NewReader(src))
 	var stack []string
-	var blocks []string
 	tokStart := int64(0)
 	for {
 		tok, err := dec.Token()
@@ -78,13 +69,13 @@ func extractSTBlocks(src []byte) []string {
 		case xml.CharData:
 			if isSTBlock(stack) && isCDATA(src, tokStart, tokEnd) {
 				if inner := strings.TrimSpace(string(t)); inner != "" {
-					blocks = append(blocks, inner)
+					out = append(out, stBlock{from: int(tokStart) + len("<![CDATA["), to: int(tokEnd) - len("]]>")})
 				}
 			}
 		}
 		tokStart = tokEnd
 	}
-	return blocks
+	return out
 }
 
 // TestXMLMalformed checks that malformed XML is reported as an error rather

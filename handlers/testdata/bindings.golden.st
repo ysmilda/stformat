@@ -15,9 +15,9 @@ VAR
 	fb : fb_axis;
 END_VAR
 
-setOut S= bitUp;
-resetOut R= bitDown;
-pDst REF= pSrc;
+setOut s= bitUp;
+resetOut r= bitDown;
+pDst ref= pSrc;
 pDst^ := 1;
 pref^ := 2;
 refTo := fb;

@@ -192,15 +192,11 @@ const (
 type Token struct {
 	Type    TokenType
 	Literal string
-	// Line and Col are the position just past the last character of the
-	// token, so for a token that spans lines (a multiline string literal)
-	// they are the end position. Offset is the authoritative start of the
-	// token in the source.
-	Line int
-	Col  int
 	// Offset is the byte index of the first character of the token in the
 	// source. It lets callers copy the original text of a token range
-	// verbatim.
+	// verbatim. The end of a token is implied by the Offset of the next one,
+	// so no line/column bookkeeping is kept: nothing outside the lexer needs
+	// it, and dropping it shrinks Token by a third.
 	Offset int
 }
 
@@ -382,8 +378,93 @@ var ScalarTypeNames = map[string]struct{}{
 
 // IsScalarType returns true if the name is an IEC 61131-3 elementary type.
 func IsScalarType(name string) bool {
-	_, ok := ScalarTypeNames[name]
+	_, scalar, _ := lookupKeyword([]byte(name))
+	return scalar
+}
+
+// keywordEntry is one slot of the open-addressed keyword table.
+type keywordEntry struct {
+	key string
+	// tt is the token type of a keyword, and TokenEOF for a name that is only
+	// an elementary type spelling (TIME_OF_DAY and friends).
+	tt TokenType
+	// scalar marks an elementary type name, which the lexer accepts as the
+	// prefix of a typed literal.
+	scalar bool
+}
+
+// keywordTable is an open-addressed table over the union of Keywords and
+// ScalarTypeNames, built from them so the maps stay the single source of
+// truth. Every identifier in a file is looked up in it, and a Go map lookup
+// costs a hash plus a probe on each of those, so the lexer uses this instead:
+// a hash folded in while the identifier is uppercased, and one string compare
+// in the common case.
+var (
+	keywordTable []keywordEntry
+	keywordMask  uint32
+)
+
+func init() {
+	n := len(Keywords) + len(ScalarTypeNames)
+	size := 1
+	for size < 2*n {
+		size *= 2
+	}
+	keywordTable = make([]keywordEntry, size)
+	keywordMask = uint32(size - 1)
+
+	for k, tt := range Keywords {
+		put(k, tt, isScalarTypeName(k))
+	}
+	for k := range ScalarTypeNames {
+		if _, ok := Keywords[k]; !ok {
+			put(k, TokenEOF, true)
+		}
+	}
+}
+
+func isScalarTypeName(k string) bool {
+	_, ok := ScalarTypeNames[k]
 	return ok
+}
+
+func put(k string, tt TokenType, scalar bool) {
+	i := hashKeyword(k) & keywordMask
+	for keywordTable[i].key != "" {
+		i = (i + 1) & keywordMask
+	}
+	keywordTable[i] = keywordEntry{key: k, tt: tt, scalar: scalar}
+}
+
+// hashKeyword is FNV-1a over the uppercase spelling. It is also the hash
+// upperASCII folds in, so a lookup does not have to walk the name twice.
+func hashKeyword(s string) uint32 {
+	h := uint32(2166136261)
+	for i := range len(s) {
+		h = (h ^ uint32(s[i])) * 16777619
+	}
+	return h
+}
+
+// lookupKeyword returns the token type of an uppercased identifier and whether
+// that name is an elementary type. found is false when the identifier is
+// neither a keyword nor a type name.
+func lookupKeyword(upper []byte) (tt TokenType, scalar, found bool) {
+	return lookupKeywordHashed(upper, hashKeyword(string(upper)))
+}
+
+// lookupKeywordHashed is lookupKeyword for a name whose hash upperASCII has
+// already computed.
+func lookupKeywordHashed(upper []byte, h uint32) (tt TokenType, scalar, found bool) {
+	for i := h & keywordMask; ; i = (i + 1) & keywordMask {
+		e := &keywordTable[i]
+		if e.key == "" {
+			return TokenEOF, false, false
+		}
+		if e.key == string(upper) {
+			return e.tt, e.scalar, true
+		}
+	}
 }
 
 // IsScalarTypeToken returns true if the token type is an IEC 61131-3 elementary
