@@ -18,9 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
 
@@ -41,25 +41,10 @@ jobs:
 
       - name: Coverage report
         run: |
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
-          {
-            echo "### Code coverage"
-            echo
-            echo "| Package | Coverage |"
-            echo "| --- | ---: |"
-            awk 'match($0, /coverage: [0-9.]+%/) {
-              pkg = ($1 == "ok") ? $2 : $1
-              printf "| %s | %s |\n", pkg, substr($0, RSTART + 10, RLENGTH - 10)
-            }' test.log
-            echo "| **Total** | **$total%** |"
-            echo
-            echo "A package without a test file of its own reports 0%: \`internal/lexer\`"
-            echo "is covered indirectly by the formatter and handler tests."
-          } >> "$GITHUB_STEP_SUMMARY"
           go tool cover -html=coverage.out -o coverage.html
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: |
@@ -73,12 +58,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.14
