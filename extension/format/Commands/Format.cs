@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using EnvDTE;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Text;
 using TCatSysManagerLib;
 
 namespace format
@@ -47,7 +48,8 @@ namespace format
             if (TryGetPlcObject(dte, out ITcPlcDeclaration declaration, out ITcPlcImplementation implementation))
             {
                 Log.Info("Formatting TwinCAT PLC object in place");
-                await GuardAsync(() => FormatPlcObjectAsync(executable, dte, declaration, implementation));
+                string moniker = GetActiveDocumentPath();
+                await GuardAsync(() => FormatPlcObjectAsync(executable, dte, moniker, declaration, implementation));
                 return;
             }
 
@@ -73,6 +75,16 @@ namespace format
                 await VS.MessageBox.ShowWarningAsync(
                     "Format",
                     "There is no supported active document to format." + detail);
+                return;
+            }
+
+            // A document shown in the Visual Studio text editor is formatted
+            // by editing its own buffer. The edit is one undo step, so Ctrl-Z
+            // reverts the whole format and the rest of the undo history of the
+            // document survives.
+            if (view is not null && IsSamePath(view.FilePath, filePath) &&
+                await FormatTextDocumentAsync(executable, view))
+            {
                 return;
             }
 
@@ -126,11 +138,13 @@ namespace format
             }
         }
 
-        // Formats a TwinCAT PLC object through the automation interface so the
-        // change is applied to the open document instead of the file on disk.
+        // Formats a TwinCAT PLC object in the editor so the change can be
+        // undone with Ctrl-Z, falling back to the automation interface, which
+        // applies the same text but leaves nothing to undo.
         private static async Task FormatPlcObjectAsync(
             string executable,
             DTE dte,
+            string moniker,
             ITcPlcDeclaration declaration,
             ITcPlcImplementation implementation)
         {
@@ -141,7 +155,7 @@ namespace format
             if (declaration is not null)
             {
                 string original = declaration.DeclarationText;
-                string formatted = await FormatTextAsync(executable, original);
+                string formatted = await FormatTextAsync(executable, original, ".st");
                 if (formatted is null)
                 {
                     return;
@@ -151,7 +165,8 @@ namespace format
                 if (Differs(formatted, original))
                 {
                     Log.Info("PLC object declaration reformatted");
-                    declaration.DeclarationText = formatted;
+                    await ApplyToPlcObjectAsync(moniker, original, formatted, "declaration",
+                        text => declaration.DeclarationText = text);
                 }
             }
 
@@ -160,7 +175,7 @@ namespace format
             if (implementation is not null && IsStructuredText(implementation))
             {
                 string original = implementation.ImplementationText;
-                string formatted = await FormatTextAsync(executable, original);
+                string formatted = await FormatTextAsync(executable, original, ".st");
                 if (formatted is null)
                 {
                     return;
@@ -170,12 +185,39 @@ namespace format
                 if (Differs(formatted, original))
                 {
                     Log.Info("PLC object implementation reformatted");
-                    implementation.ImplementationText = formatted;
+                    await ApplyToPlcObjectAsync(moniker, original, formatted, "implementation",
+                        text => implementation.ImplementationText = text);
                 }
             }
 
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
             TrySave(dte);
+        }
+
+        // Writes the formatted text into the open PLC object. The editor
+        // buffer of the object is used first, because a write through it is
+        // recorded as an undo action of the TwinCAT editor. When that buffer
+        // cannot be reached the automation setter applies the text instead.
+        private static async Task ApplyToPlcObjectAsync(
+            string moniker,
+            string original,
+            string formatted,
+            string part,
+            Action<string> apply)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            string reason = null;
+            bool written = !string.IsNullOrEmpty(moniker) &&
+                PlcUndoBuffer.TryWrite(moniker, original, formatted, out reason);
+            if (written)
+            {
+                Log.Info($"PLC object {part} written through the editor buffer, undoable with Ctrl-Z");
+                return;
+            }
+
+            Log.Info($"PLC object {part} written through automation, editor buffer unavailable: {reason ?? "no document moniker"}");
+            apply(formatted);
         }
 
         // Guards against re-entrancy: formatting saves the document, which
@@ -211,9 +253,10 @@ namespace format
             }).FireAndForget();
         }
 
-        // Formats a document that was just saved. TwinCAT PLC objects are
-        // formatted through the automation interface; other supported files
-        // are formatted on disk and reloaded in the editor.
+        // Formats a document that was just saved. A document shown in the Visual
+        // Studio text editor is formatted by editing its own buffer; a TwinCAT
+        // PLC object is formatted in the editor; anything else is formatted on
+        // disk and reloaded.
         private static async Task FormatSavedDocumentAsync(string moniker)
         {
             if (string.IsNullOrEmpty(moniker))
@@ -244,7 +287,7 @@ namespace format
             if (declaration is not null || implementation is not null)
             {
                 Log.Info($"Format-on-save: TwinCAT PLC object {moniker}");
-                await FormatPlcObjectAsync(executable, dte, declaration, implementation);
+                await FormatPlcObjectAsync(executable, dte, moniker, declaration, implementation);
                 return;
             }
 
@@ -257,11 +300,59 @@ namespace format
             await FormatFileAsync(executable, moniker);
         }
 
+        // Formats a supported file that is open in the Visual Studio text editor by
+        // editing the buffer of that editor, which keeps the change on the
+        // undo stack. Returns false when the file is not shown by the text
+        // editor, in which case it is formatted on disk instead.
+        private static async Task<bool> FormatTextDocumentAsync(string executable, DocumentView view)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            ITextBuffer buffer = EditorBuffer.TryGet(view.TextView);
+            if (buffer is null)
+            {
+                Log.Info($"No text buffer for {view.FilePath}, formatting on disk instead");
+                return false;
+            }
+
+            string original = buffer.CurrentSnapshot.GetText();
+            string formatted = await FormatTextAsync(executable, original, Path.GetExtension(view.FilePath));
+            if (formatted is null)
+            {
+                return true;
+            }
+
+            if (formatted == original)
+            {
+                Log.Info($"No formatting changes for {view.FilePath}");
+                return true;
+            }
+
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            EditorBuffer.ReplaceAll(buffer, formatted);
+            Log.Info($"Formatted the buffer of {view.FilePath}");
+
+            // The file on disk still holds the text as it was before the
+            // format, so the document is saved again. That raises the save
+            // event once more, which the re-entrancy guard drops.
+            view.Document?.Save();
+            return true;
+        }
+
         // Formats a supported file on disk and refreshes the open text document
         // when the content changed. The file is only reloaded when stformat
         // actually modified it, so a no-op save does not disturb the editor.
         private static async Task FormatFileAsync(string executable, string filePath)
         {
+            // A document shown in the Visual Studio text editor is formatted
+            // in its own buffer, so that Ctrl-Z reverts the format.
+            DocumentView open = await VS.Documents.GetActiveDocumentViewAsync();
+            if (open is not null && IsSamePath(open.FilePath, filePath) &&
+                await FormatTextDocumentAsync(executable, open))
+            {
+                return;
+            }
+
             string before = File.ReadAllText(filePath);
 
             (int exitCode, _) = await RunAsync(executable, filePath);
@@ -339,17 +430,24 @@ namespace format
             }
         }
 
-        // Formats a piece of ST text by writing it to a temporary file and
-        // running stformat on it. Returns null and reports the error when
-        // stformat fails.
-        private static async Task<string> FormatTextAsync(string executable, string text)
+        // Formats a piece of text by writing it to a temporary file and running
+        // stformat on it. The extension of the document it came from decides
+        // which handler stformat uses, so a TwinCAT XML file keeps being
+        // formatted as XML and a plain ST file as ST. Returns null and
+        // reports the error when stformat fails.
+        private static async Task<string> FormatTextAsync(string executable, string text, string extension)
         {
             if (string.IsNullOrEmpty(text))
             {
                 return text;
             }
 
-            string temporary = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".st");
+            if (string.IsNullOrEmpty(extension))
+            {
+                extension = ".st";
+            }
+
+            string temporary = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + extension);
             try
             {
                 File.WriteAllText(temporary, text, new UTF8Encoding(false));
