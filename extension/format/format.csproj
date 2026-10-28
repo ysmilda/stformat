@@ -47,6 +47,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Commands\Format.cs" />
+    <Compile Include="Commands\FormatSolution.cs" />
     <Compile Include="Log.cs" />
     <Compile Include="TextViewTracker.cs" />
     <Compile Include="Options\General.cs" />
@@ -89,6 +90,8 @@
     <Reference Include="System" />
     <Reference Include="System.Design" />
     <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
     <Reference Include="EnvDTE" />
     <Reference Include="TCatSysManagerLib">
       <HintPath>References\TCatSysManagerLib.dll</HintPath>

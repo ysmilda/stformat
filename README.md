@@ -105,6 +105,11 @@ if (Test-Path "$ext\StFormat") { Remove-Item "$ext\StFormat" -Recurse -Force }
 The extension adds:
 
 - **Format Structured Text** (Tools menu): formats the active document.
+- **Format Solution** (Tools menu and the solution's context menu in Solution
+  Explorer): formats every supported file of the solution on disk, including
+  all files of the TwinCAT PLC projects. For a TwinCAT solution it asks first,
+  saves everything, closes the solution while the files are formatted and
+  opens it again, because TwinCAT holds the PLC project in memory.
 - Format on save, which can be turned off under **Tools > Options > StFormat**.
 
 TwinCAT POUs, GVLs, DUTs and interfaces are formatted through the TwinCAT
@@ -116,7 +121,8 @@ Undo (Ctrl+Z) reverts formatting in one step in Visual Studio text editors,
 such as plain `.st` files. It does **not** undo formatting in TwinCAT editors:
 TwinCAT does not record changes made through its automation interface in its
 undo history, and undoing there can leave the editor showing text that no
-longer matches the object. Use source control to revert formatting.
+longer matches the object. Format Solution cannot be undone either. Use source
+control to revert formatting.
 
 Problems are logged to `%LOCALAPPDATA%\StFormat\stformat.log`.
 

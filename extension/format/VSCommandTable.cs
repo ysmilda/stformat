@@ -21,6 +21,8 @@ namespace format
     internal sealed partial class PackageIds
     {
         public const int MyMenuGroup = 0x0001;
+        public const int SolutionContextGroup = 0x0003;
         public const int MyCommand = 0x0100;
+        public const int FormatSolutionCommand = 0x0101;
     }
 }

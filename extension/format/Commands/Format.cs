@@ -602,13 +602,17 @@ namespace format
             Log.Info("Document save handler subscribed");
         }
 
+        // Set while Format Solution saves what it formatted, so those saves
+        // are not formatted again one by one. Only touched on the UI thread.
+        internal static bool SuppressOnSave;
+
         private static readonly ToolkitThreadHelper _toolkitThreadHelper = ToolkitThreadHelper.Create();
 
         private static void OnDocumentSaved(string moniker)
         {
             // Projects, solutions and other files are saved all the time;
             // ignore them before touching the automation model.
-            if (!IsSupported(moniker) || Formatting.Contains(moniker))
+            if (SuppressOnSave || !IsSupported(moniker) || Formatting.Contains(moniker))
             {
                 return;
             }
@@ -835,7 +839,8 @@ namespace format
             try
             {
                 (int exitCode, byte[] output, string stderr) = await Task.Run(() => RunProcessAsync(executable, arguments, input));
-                Log.Info($"Ran stformat {arguments} for {name} (exit {exitCode})");
+                string shown = arguments.Length > 200 ? arguments.Substring(0, 200) + "..." : arguments;
+                Log.Info($"Ran stformat {shown} for {name} (exit {exitCode})");
                 if (exitCode == 0)
                 {
                     return (output, null);
