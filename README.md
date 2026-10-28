@@ -102,6 +102,16 @@ if (Test-Path "$ext\StFormat") { Remove-Item "$ext\StFormat" -Recurse -Force }
 (Get-Item "$ext\extensions.configurationchanged").LastWriteTime = Get-Date
 ```
 
+The extension adds:
+
+- **Format Structured Text** (Tools menu): formats the active document.
+- Format on save, which can be turned off under **Tools > Options > StFormat**.
+
+TwinCAT POUs, GVLs, DUTs and interfaces are formatted through the TwinCAT
+automation interface, so the open editor is updated in place without a
+"modified outside the editor" prompt. Other files are formatted in their text
+editor buffer.
+
 Problems are logged to `%LOCALAPPDATA%\StFormat\stformat.log`.
 
 ## Usage

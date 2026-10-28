@@ -21,7 +21,7 @@
         <Icon guid="ImageCatalogGuid" id="StatusInformation" />
         <CommandFlag>IconIsMoniker</CommandFlag>
         <Strings>
-          <ButtonText>Format</ButtonText>
+          <ButtonText>Format Structured Text</ButtonText>
           <LocCanonicalName>.format.Format</LocCanonicalName>
         </Strings>
       </Button>

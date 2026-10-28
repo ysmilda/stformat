@@ -52,6 +52,7 @@
   <ItemGroup>
     <Compile Include="..\format\Commands\Format.cs" Link="Commands\Format.cs" />
     <Compile Include="..\format\Log.cs" Link="Log.cs" />
+    <Compile Include="..\format\Options\General.cs" Link="Options\General.cs" />
     <Compile Include="..\format\Properties\AssemblyInfo.cs" Link="Properties\AssemblyInfo.cs" />
     <Compile Include="..\format\formatPackage.cs" Link="formatPackage.cs" />
     <Compile Include="..\format\source.extension.cs" Link="source.extension.cs" />
