@@ -50,3 +50,8 @@ var
     w:int;
 end_var
 end_function_block
+(*****************)
+//////////
+///doc comment
+//x := 1; commented-out code keeps its case
+//   indented text keeps its indentation

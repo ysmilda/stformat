@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -29,46 +30,56 @@ func TestCharClassMatchesRawPredicates(t *testing.T) {
 	}
 }
 
-// TestKeywordTable checks the open-addressed table the lexer probes against
-// the two maps it is built from. The table is derived data, so a keyword added
-// to a map has to show up in lookups.
+// TestKeywordTable checks what is derived from the keywords table: every
+// spelling is found by the lexer's lookup, every keyword token type has a
+// canonical spelling, and non-keywords are not found.
 func TestKeywordTable(t *testing.T) {
 	t.Parallel()
-	for k, want := range Keywords {
-		tt, scalar, found := lookupKeyword([]byte(k))
-		if !found {
-			t.Errorf("lookupKeyword(%q) not found", k)
-			continue
+	for _, k := range keywords {
+		tt, found := lookupKeyword([]byte(k.spelling))
+		if !found || tt != k.tt {
+			t.Errorf("lookupKeyword(%q) = %s, %v; want %s", k.spelling, tt, found, k.tt)
 		}
-		if tt != want {
-			t.Errorf("lookupKeyword(%q) = %s, want %s", k, TokenName(tt), TokenName(want))
-		}
-		if _, isScalar := ScalarTypeNames[k]; isScalar != scalar {
-			t.Errorf("lookupKeyword(%q) scalar = %v, want %v", k, scalar, isScalar)
+		if KeywordSpelling(k.tt) == "" {
+			t.Errorf("KeywordSpelling(%s) is empty", k.tt)
 		}
 	}
-	for k := range ScalarTypeNames {
-		if _, _, found := lookupKeyword([]byte(k)); !found {
-			t.Errorf("type name %q not found in the keyword table", k)
+	for tt := TokenProgram; tt <= TokenWcharType; tt++ {
+		if KeywordSpelling(tt) == "" {
+			t.Errorf("keyword token type %d has no spelling in the table", int(tt))
 		}
 	}
-	for _, name := range []string{"", "x", "ANDX", "AND_", "_AND", "NOTAKEYWORD", "flags"} {
-		if _, _, found := lookupKeyword([]byte(name)); found {
+	for _, name := range []string{"", "x", "ANDX", "AND_", "_AND", "NOTAKEYWORD", "flags", "D", "LD"} {
+		if _, found := lookupKeyword([]byte(name)); found {
 			t.Errorf("lookupKeyword(%q) unexpectedly found", name)
 		}
 	}
 }
 
+// TestTokenTypeString checks that every token type has a name of its own.
+func TestTokenTypeString(t *testing.T) {
+	t.Parallel()
+	seen := make(map[string]TokenType)
+	for tt := TokenEOF; tt < tokenCount; tt++ {
+		s := tt.String()
+		if strings.HasPrefix(s, "TokenType(") {
+			t.Errorf("token type %d has no name", int(tt))
+		}
+		// Aliased keywords share a type, never a name across types.
+		if prev, dup := seen[s]; dup {
+			t.Errorf("token types %d and %d are both named %q", int(prev), int(tt), s)
+		}
+		seen[s] = tt
+	}
+}
+
 // TestMaxKeywordLenCoversTable guards the length the lexer uses to skip the
-// uppercase copy: an identifier longer than this cannot be in either map.
+// uppercase copy: an identifier longer than this cannot be in the table.
 func TestMaxKeywordLenCoversTable(t *testing.T) {
 	t.Parallel()
 	longest := 0
-	for k := range Keywords {
-		longest = max(longest, len(k))
-	}
-	for k := range ScalarTypeNames {
-		longest = max(longest, len(k))
+	for _, k := range keywords {
+		longest = max(longest, len(k.spelling))
 	}
 	if maxKeywordLen < longest {
 		t.Errorf("maxKeywordLen = %d, but the longest name is %d", maxKeywordLen, longest)
@@ -94,5 +105,61 @@ func TestLexOffsets(t *testing.T) {
 			t.Errorf("token %d offset %d is before the previous token's %d",
 				i, tok.Offset, toks[i-1].Offset)
 		}
+	}
+}
+
+// TestLexTokenTypes pins the token types of inputs where the meaning depends
+// on context: set/reset operators, keyword-spelled members and characters that
+// start no token.
+func TestLexTokenTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want []TokenType
+	}{
+		{name: "set after target", in: "x S= y", want: []TokenType{TokenIdent, TokenSAssign, TokenIdent}},
+		{name: "reset after index", in: "a[1] R= y", want: []TokenType{TokenIdent, TokenLBracket, TokenNumber, TokenRBracket, TokenRAssign, TokenIdent}},
+		{name: "ref after deref", in: "p^ REF= y", want: []TokenType{TokenIdent, TokenCaret, TokenRefAssign, TokenIdent}},
+		{name: "s compared after IF", in: "IF s=1", want: []TokenType{TokenIf, TokenIdent, TokenEqual, TokenNumber}},
+		{name: "r compared after AND", in: "a AND r=2", want: []TokenType{TokenIdent, TokenAnd, TokenIdent, TokenEqual, TokenNumber}},
+		{name: "ref compared after :=", in: "x := ref=3", want: []TokenType{TokenIdent, TokenAssign, TokenIdent, TokenEqual, TokenNumber}},
+		{name: "s output binding", in: "(s=>q", want: []TokenType{TokenLParen, TokenIdent, TokenOutputBind, TokenIdent}},
+		{name: "keyword member", in: "st.Type", want: []TokenType{TokenIdent, TokenDot, TokenIdent}},
+		{name: "keyword method", in: "fb.Method()", want: []TokenType{TokenIdent, TokenDot, TokenIdent, TokenLParen, TokenRParen}},
+		{name: "type member", in: "log.Time", want: []TokenType{TokenIdent, TokenDot, TokenIdent}},
+		{name: "keyword after range stays keyword", in: "1..2 OF", want: []TokenType{TokenNumber, TokenDotDot, TokenNumber, TokenOf}},
+		{name: "illegal character kept", in: "a ? b", want: []TokenType{TokenIdent, TokenIllegal, TokenIdent}},
+		{name: "non-ascii identifier", in: "Größe := 1", want: []TokenType{TokenIdent, TokenAssign, TokenNumber}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			toks := Lex(c.in)
+			toks = toks[:len(toks)-1] // EOF
+			if len(toks) != len(c.want) {
+				t.Fatalf("Lex(%q) = %d tokens, want %d: %v", c.in, len(toks), len(c.want), toks)
+			}
+			for i, tok := range toks {
+				if tok.Type != c.want[i] {
+					t.Errorf("Lex(%q) token %d (%q) = %s, want %s",
+						c.in, i, tok.Literal, tok.Type, c.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestLexKeepsEveryByte checks that the tokens and the whitespace between them
+// add up to the input: no character may be skipped, whatever it is.
+func TestLexKeepsEveryByte(t *testing.T) {
+	t.Parallel()
+	const src = "x := y ? 1 & z @ `w` ~ ! | \\ ; Größe := 'a';"
+	var b strings.Builder
+	for _, tok := range Lex(src) {
+		b.WriteString(tok.Literal)
+	}
+	if want := strings.Join(strings.Fields(src), ""); b.String() != want {
+		t.Errorf("tokens spell %q, want %q", b.String(), want)
 	}
 }

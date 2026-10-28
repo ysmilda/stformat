@@ -120,7 +120,7 @@ func tokensPreserved(input, output string) string {
 	for i := range min(len(to), len(ti)) {
 		a, b := ti[i], to[i]
 		if a.Type != b.Type {
-			return fmt.Sprintf("token %d type changed: %s -> %s\n%s", i, lexer.TokenName(a.Type), lexer.TokenName(b.Type), diffStrings(input, output))
+			return fmt.Sprintf("token %d type changed: %s -> %s\n%s", i, a.Type, b.Type, diffStrings(input, output))
 		}
 		// Keywords may be normalised in spelling and case (if -> IF, tod ->
 		// TOD); the token type already carries their meaning.

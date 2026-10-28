@@ -103,7 +103,7 @@ func lineDirective(line string) string {
 func scanDirectives(tokens []lexer.Token) (all bool, runs []tokenRun) {
 	leading := true
 	for i, tok := range tokens {
-		if tok.Type != lexer.TokenLineComment && tok.Type != lexer.TokenBlockComment {
+		if !lexer.IsComment(tok.Type) {
 			leading = false
 			continue
 		}
@@ -112,19 +112,27 @@ func scanDirectives(tokens []lexer.Token) (all bool, runs []tokenRun) {
 			if leading {
 				return true, nil
 			}
+		// Sections do not nest: an "off" inside an ignored section and an
+		// "on" outside one are ordinary comments, so the first "on" after an
+		// "off" always ends the section.
 		case directiveOff:
-			runs = append(runs, tokenRun{start: i, end: unterminated})
+			if !open(runs) {
+				runs = append(runs, tokenRun{start: i, end: unterminated})
+			}
 		case directiveOn:
-			if n := len(runs); n > 0 {
-				runs[n-1].end = i
+			if open(runs) {
+				runs[len(runs)-1].end = i
 			}
 		}
 	}
 	// An "off" without a matching "on" ignores the rest of the file.
-	for i := range runs {
-		if runs[i].end == unterminated {
-			runs[i].end = len(tokens)
-		}
+	if open(runs) {
+		runs[len(runs)-1].end = len(tokens)
 	}
 	return false, runs
+}
+
+// open reports whether the last ignored section has not been ended yet.
+func open(runs []tokenRun) bool {
+	return len(runs) > 0 && runs[len(runs)-1].end == unterminated
 }

@@ -3,9 +3,12 @@ package formatter
 import (
 	"bytes"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/ysmilda/stformat/internal/lexer"
 )
 
-// PostProcess applies line-level formatting rules after the main
+// postProcess applies line-level formatting rules after the main
 // token-driven pass:
 //  1. Long-line wrapping for function/FB calls with multiple arguments
 //  2. Long-line wrapping for IF/ELSIF conditions at AND/OR/XOR operators,
@@ -17,7 +20,7 @@ import (
 // the token pass put around ':' and ':='. A comment at the end of a line never
 // counts towards the line length, and lines inside a "stformat:off" region are
 // left exactly as the token pass emitted them.
-func PostProcess(output string) string {
+func postProcess(output string, inner []int) string {
 	var (
 		b        strings.Builder
 		r        reflower
@@ -29,6 +32,7 @@ func PostProcess(output string) string {
 		// list broken over several lines is known to be open when the line that
 		// closes it is reached.
 		depth int
+		n     int // index of the current line
 	)
 
 	// The lines are walked in place rather than split into a []string. Every
@@ -45,12 +49,20 @@ func PostProcess(output string) string {
 		}
 		line := output[pos:lineEnd]
 
+		// A line inside a multi-line string or comment is text: it carries no
+		// structure and is never reflowed.
+		inToken := len(inner) > 0 && inner[0] == n
+		if inToken {
+			inner = inner[1:]
+		}
+		n++
+
 		// Directive, block-comment and bracket state only move on a line that
 		// can carry a comment delimiter or a bracket. A single vectorised byte
 		// search decides whether they are worth looking at; running the
 		// searches per delimiter instead costs more than the scans it saves,
 		// because the call overhead dominates on lines of a few dozen bytes.
-		if mayCarryStructure(line) {
+		if !inToken && mayCarryStructure(line) {
 			switch lineDirective(line) {
 			case directiveIgnore:
 				ignoring = leading
@@ -68,9 +80,9 @@ func PostProcess(output string) string {
 				depth += bracketDelta(line)
 			}
 		}
-		verbatim := ignoring
+		verbatim := ignoring || inToken
 		if leading {
-			if t := strings.TrimSpace(line); t != "" && !isCommentLine(t, false) {
+			if t := trimBlank(line); t != "" && !isCommentLine(t, false) {
 				leading = false
 			}
 		}
@@ -156,7 +168,7 @@ func bracketDelta(line string) int {
 type blockComments struct{ open bool }
 
 func (b *blockComments) scan(line string) {
-	t := strings.TrimSpace(line)
+	t := trimBlank(line)
 	switch {
 	case strings.HasPrefix(t, "(*"):
 		b.open = !strings.HasSuffix(t, "*)")
@@ -167,7 +179,17 @@ func (b *blockComments) scan(line string) {
 
 // --------------- long-line wrapping ---------------
 
+// maxLineLen is the widest a line may be, in columns, before it is reflowed.
 const maxLineLen = 120
+
+// tabWidth is how many columns a tab takes, as in the TwinCAT editor.
+const tabWidth = 4
+
+// width returns how many columns s takes on screen: a tab counts tabWidth
+// columns and a character counts one, however many bytes it is encoded in.
+func width(s string) int {
+	return utf8.RuneCountInString(s) + (tabWidth-1)*strings.Count(s, "	")
+}
 
 // reflow lays out one over-long line into the scratch buffer and reports
 // whether it did.
@@ -184,15 +206,15 @@ const maxLineLen = 120
 func (r *reflower) reflow(line string, verbatim, inBlockComment bool, depth int) bool {
 	// A line within the limit can never be reflowed, and every remaining check
 	// walks it, so this shortcut carries most lines of a typical file.
-	if len(line) <= maxLineLen {
+	if width(line) <= maxLineLen {
 		return false
 	}
-	t := strings.TrimSpace(line)
+	t := trimBlank(line)
 	if verbatim || isCommentLine(t, inBlockComment) {
 		return false
 	}
 	code, comment := splitTrailingComment(line)
-	if len(code) <= maxLineLen || hasOpenQuote(code) {
+	if width(code) <= maxLineLen || hasOpenQuote(code) {
 		return false
 	}
 	r.lines = r.lines[:0]
@@ -205,6 +227,24 @@ func (r *reflower) reflow(line string, verbatim, inBlockComment bool, depth int)
 		r.trimLastLine()
 		r.lines = append(r.lines, "  "...)
 		r.lines = append(r.lines, comment...)
+	}
+	// The layout above works on text, not tokens, and cannot know every way
+	// a token can hold a comma or a bracket. A reflow that would split or join
+	// a token is dropped and the line kept as it was.
+	return sameTokens(line, string(r.lines))
+}
+
+// sameTokens reports whether a and b lex to exactly the same tokens, so that
+// they differ in the whitespace between tokens only.
+func sameTokens(a, b string) bool {
+	ta, tb := lexer.Lex(a), lexer.Lex(b)
+	if len(ta) != len(tb) {
+		return false
+	}
+	for i := range ta {
+		if ta[i].Type != tb[i].Type || ta[i].Literal != tb[i].Literal {
+			return false
+		}
 	}
 	return true
 }
@@ -272,7 +312,7 @@ func splitTrailingComment(line string) (code, comment string) {
 			}
 		case '(':
 			if i+1 < len(line) && line[i+1] == '*' &&
-				strings.HasSuffix(strings.TrimSpace(line), "*)") {
+				strings.HasSuffix(trimBlank(line), "*)") {
 				code, comment = line[:i], line[i:]
 				return trimBothEnds(code, comment)
 			}
@@ -284,7 +324,7 @@ func splitTrailingComment(line string) (code, comment string) {
 // trimBothEnds removes trailing blanks from code and the surrounding blanks
 // from comment.
 func trimBothEnds(code, comment string) (string, string) {
-	return strings.TrimRight(code, " \t"), strings.TrimSpace(comment)
+	return strings.TrimRight(code, " \t"), trimBlank(comment)
 }
 
 // hasOpenQuote reports whether s ends inside an unterminated string literal,
@@ -313,7 +353,7 @@ func hasOpenQuote(s string) bool {
 // bracket. A list that opens the line keeps its bracket, a continued one leaves
 // it to the line above.
 func (r *reflower) wrapStatement(line string, depth int) bool {
-	trimmed := strings.TrimSpace(line)
+	trimmed := trimBlank(line)
 	if len(trimmed) == 0 {
 		return false
 	}
@@ -349,7 +389,7 @@ func (r *reflower) wrapStatement(line string, depth int) bool {
 		if c := stmt[open-1]; !isIdentChar(c) && c != ')' && c != ']' {
 			return false
 		}
-		callPrefix = strings.TrimSpace(stmt[:open])
+		callPrefix = trimBlank(stmt[:open])
 	}
 
 	// Extract arguments and split by top-level commas.
@@ -360,6 +400,12 @@ func (r *reflower) wrapStatement(line string, depth int) bool {
 	args := r.splitArgs(stmt[first:close])
 	if len(args) <= 1 {
 		return false
+	}
+	// An empty argument (f(a,,b)) is not code to lay out; it is left as it is.
+	for _, a := range args {
+		if trimBlank(a) == "" {
+			return false
+		}
 	}
 
 	indent := lineIndent(line)
@@ -374,7 +420,7 @@ func (r *reflower) wrapStatement(line string, depth int) bool {
 		r.newLine()
 		r.write(indent)
 		r.write("\t")
-		r.write(strings.TrimSpace(a))
+		r.write(trimBlank(a))
 		if i < len(args)-1 {
 			r.write(",")
 		}
@@ -389,8 +435,8 @@ func (r *reflower) wrapStatement(line string, depth int) bool {
 
 // splitArgs splits a call's argument list by the commas at depth 0, ignoring
 // commas and brackets inside string literals, and returns the arguments in the
-// scratch slice. A leading, trailing or doubled comma yields no empty
-// argument.
+// scratch slice. A leading, trailing or doubled comma yields an empty
+// argument, so that no comma is lost.
 func (r *reflower) splitArgs(s string) []string {
 	args := r.args[:0]
 	depth := 0
@@ -408,16 +454,12 @@ func (r *reflower) splitArgs(s string) []string {
 			}
 		case ',':
 			if depth == 0 {
-				if arg := s[start:i]; arg != "" {
-					args = append(args, arg)
-				}
+				args = append(args, s[start:i])
 				start = i + 1
 			}
 		}
 	}
-	if arg := s[start:]; arg != "" {
-		args = append(args, arg)
-	}
+	args = append(args, s[start:])
 	r.args = args
 	return args
 }
@@ -500,7 +542,7 @@ func matchParens(stmt string, close int) (int, int) {
 // Nested groups recurse. The THEN keyword moves to a line of its own at the
 // indentation of the IF/ELSIF. It reports whether it wrote a replacement.
 func (r *reflower) wrapIf(line string) bool {
-	trimmed := strings.TrimSpace(line)
+	trimmed := trimBlank(line)
 
 	var kw, rest string
 	switch {
@@ -518,7 +560,7 @@ func (r *reflower) wrapIf(line string) bool {
 	if thenSuffix == "" {
 		return false
 	}
-	cond = strings.TrimSpace(cond)
+	cond = trimBlank(cond)
 	if cond == "" {
 		return false
 	}
@@ -544,7 +586,7 @@ func (r *reflower) wrapIf(line string) bool {
 	r.trimLastLine()
 	r.newLine()
 	r.lines = append(r.lines, r.indentAt(0)...)
-	r.write(strings.TrimSpace(thenSuffix))
+	r.write(trimBlank(thenSuffix))
 	return true
 }
 
@@ -562,7 +604,7 @@ func (r *reflower) emitOperands(cond, kw string, depth int, inlineFirst bool) {
 		if i < len(ops) {
 			end = ops[i]
 		}
-		seg := strings.TrimSpace(cond[start:end])
+		seg := trimBlank(cond[start:end])
 		start = end
 
 		if inner, lead, ok := parenOperand(seg); ok {
@@ -658,11 +700,11 @@ func (r *reflower) topLevelOps(s string, level int) []int {
 // optionally preceded by an AND/OR/XOR operator. It returns the content
 // between the outer parens and the leading operator.
 func parenOperand(seg string) (inner, lead string, ok bool) {
-	s := strings.TrimSpace(seg)
+	s := trimBlank(seg)
 	for _, op := range []string{"AND", "OR", "XOR"} {
 		if s == op || strings.HasPrefix(s, op+" ") {
 			lead = op + " "
-			s = strings.TrimSpace(s[len(op):])
+			s = trimBlank(s[len(op):])
 			break
 		}
 	}
@@ -694,7 +736,7 @@ func parenGroup(s string) (inner string, ok bool) {
 				if i != len(s)-1 {
 					return "", false
 				}
-				return strings.TrimSpace(s[1:i]), true
+				return trimBlank(s[1:i]), true
 			}
 		}
 	}
@@ -767,4 +809,11 @@ func isIdentStart(b byte) bool {
 
 func isIdentChar(b byte) bool {
 	return isIdentStart(b) || (b >= '0' && b <= '9')
+}
+
+// trimBlank removes the spaces and tabs around s. strings.TrimSpace would also
+// remove characters such as a form feed, which are tokens of the source that
+// the pass must keep.
+func trimBlank(s string) string {
+	return strings.Trim(s, " \t")
 }

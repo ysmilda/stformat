@@ -38,15 +38,20 @@ func readLeadingComments(br *bufio.Reader) (head []byte, ignored bool) {
 	inBlockComment := false
 scan:
 	for {
+		// A last line without a line break comes back together with the
+		// error, so it is kept before the error is looked at: dropping it
+		// would lose the whole input when it is a single unterminated line.
 		line, err := br.ReadString('\n')
+		buf.WriteString(line)
 		if err != nil {
 			// End of input, or a read error that surfaces when the caller
-			// copies the rest of the stream.
+			// copies the rest of the stream. A directive on the partial line
+			// needs no look here: the whole input is now in head, and Format
+			// honours it.
 			break scan
 		}
-		buf.WriteString(line)
 
-		t := strings.TrimSpace(line)
+		t := strings.TrimSpace(strings.TrimPrefix(line, utf8BOM))
 		switch {
 		case inBlockComment:
 			inBlockComment = !strings.HasSuffix(t, "*)")

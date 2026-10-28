@@ -17,8 +17,8 @@ a := 1;  // stformat:off
 // STFORMAT: OFF
    another    :=   2;
 // stformat : on
-// Stformat:ignore is only a directive in the leading comment block, so here it
-// Is an ordinary comment.
+// stformat:ignore is only a directive in the leading comment block, so here it
+// is an ordinary comment.
 b := 4;  // stformat:ignore
 c := 5;
 IF a > 0 THEN
@@ -26,6 +26,6 @@ IF a > 0 THEN
 		firstArgument := aValueWithALongName,
 		secondArgument := anotherValueWithALongName,
 		thirdArgument := yetAnotherValue
-	);  // An explanation of the call
+	);  // an explanation of the call
 END_IF
 END_PROGRAM

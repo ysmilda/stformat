@@ -1,6 +1,6 @@
 PROGRAM p
 x := (a AND_THEN b) OR_ELSE (c XOR d);
-y := NOT (a AND b);
+y := NOT(a AND b);
 z := a MOD 7;
 w := x ** 2;
 q := (len > 0) AND (val <> 0);

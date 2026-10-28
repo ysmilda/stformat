@@ -17,7 +17,7 @@ END_PROGRAM
 // The short line opens the block comment, so the long line after it is comment text.
 
 PROGRAM blockOpen
-(* Block
+(* block
 veryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);
 *)
 cal(a := 1, b := 2);
@@ -25,7 +25,7 @@ END_PROGRAM
 // The comment opens and closes on the long line itself, so the next line is code again.
 
 PROGRAM blockClosed
-(* A long comment that just goes on and on and on and on and on and on and on and on and on *)
+(* a long comment that just goes on and on and on and on and on and on and on and on and on *)
 veryveryverylongfunction(
 	firstArgument := aValueWithALongName,
 	secondArgument := anotherValueWithALongName,

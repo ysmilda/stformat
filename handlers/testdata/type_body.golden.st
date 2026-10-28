@@ -31,7 +31,7 @@ TYPE t :
 END_TYPE
 
 // A parenthesis inside a comment is text, so it does not open a level.
-(* Note ( unbalanced *)
+(* note ( unbalanced *)
 
 TYPE FromComment :
 	(

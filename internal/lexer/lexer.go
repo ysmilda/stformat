@@ -2,6 +2,7 @@ package lexer
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // Lexer tokenizes IEC 61131-3 Structured Text source code.
@@ -36,7 +37,7 @@ func estimateTokens(n int) int {
 
 func (l *Lexer) lexAll() {
 	for l.pos < len(l.input) {
-		l.skipWhitespaceAndComments()
+		l.lexTrivia()
 		if l.pos >= len(l.input) {
 			break
 		}
@@ -84,7 +85,9 @@ func (l *Lexer) emit(tt TokenType, literal string) {
 	})
 }
 
-func (l *Lexer) skipWhitespaceAndComments() {
+// lexTrivia skips whitespace and emits the comments and pragmas it passes, up
+// to the start of the next code token.
+func (l *Lexer) lexTrivia() {
 	// Runs of blanks are skipped in one go rather than a byte at a time.
 	for l.pos < len(l.input) {
 		if charClass[l.input[l.pos]]&classSpace != 0 {
@@ -97,22 +100,22 @@ func (l *Lexer) skipWhitespaceAndComments() {
 		}
 		ch := l.peek()
 		if ch == '/' && l.peekAt(1) == '/' {
-			l.skipLineComment()
+			l.lexLineComment()
 			continue
 		}
 		if ch == '(' && l.peekAt(1) == '*' {
-			l.skipBlockComment()
+			l.lexBlockComment()
 			continue
 		}
 		if ch == '{' {
-			l.skipPragma()
+			l.lexPragma()
 			continue
 		}
 		break
 	}
 }
 
-func (l *Lexer) skipLineComment() {
+func (l *Lexer) lexLineComment() {
 	start := l.pos
 	// The newline that ends the comment is not part of it, so the scan stops
 	// at the first one.
@@ -135,7 +138,7 @@ func (l *Lexer) skipLineComment() {
 	})
 }
 
-func (l *Lexer) skipBlockComment() {
+func (l *Lexer) lexBlockComment() {
 	start := l.pos
 	depth := 1
 	l.advanceN(2) // skip (*
@@ -159,7 +162,7 @@ func (l *Lexer) skipBlockComment() {
 	})
 }
 
-func (l *Lexer) skipPragma() {
+func (l *Lexer) lexPragma() {
 	start := l.pos
 	depth := 1
 	l.advance() // skip {
@@ -177,7 +180,7 @@ func (l *Lexer) skipPragma() {
 		l.advance()
 	}
 	l.tokens = append(l.tokens, Token{
-		Type:    TokenBlockComment, // Pragmas preserved as comments
+		Type:    TokenPragma,
 		Literal: l.input[start:l.pos],
 		Offset:  start,
 	})
@@ -195,7 +198,7 @@ func (l *Lexer) lex() {
 	// what TwinCAT and CODESYS accept.
 	if l.pos+1 < len(l.input) {
 		// REF= must be checked before R=.
-		if l.pos+3 < len(l.input) && equalFoldASCII(l.input[l.pos:l.pos+4], "REF=") {
+		if l.pos+3 < len(l.input) && equalFoldASCII(l.input[l.pos:l.pos+4], "REF=") && l.afterOperand() {
 			l.advanceN(4)
 			l.emit(TokenRefAssign, l.input[l.start:l.pos])
 			return
@@ -231,10 +234,16 @@ func (l *Lexer) lex() {
 			l.emit(TokenPower, "**")
 			return
 		case "S=":
+			if !l.afterOperand() {
+				break
+			}
 			l.advanceN(2)
 			l.emit(TokenSAssign, l.input[l.start:l.pos])
 			return
 		case "R=":
+			if !l.afterOperand() {
+				break
+			}
 			l.advanceN(2)
 			l.emit(TokenRAssign, l.input[l.start:l.pos])
 			return
@@ -276,12 +285,6 @@ func (l *Lexer) lex() {
 	case ']':
 		l.advance()
 		l.emit(TokenRBracket, "]")
-	case '{':
-		l.advance()
-		l.emit(TokenLBrace, "{")
-	case '}':
-		l.advance()
-		l.emit(TokenRBrace, "}")
 	case ';':
 		l.advance()
 		l.emit(TokenSemicolon, ";")
@@ -308,7 +311,7 @@ func (l *Lexer) lex() {
 		l.lexString(true)
 	default:
 		// Numbers
-		if isDigit(ch) || (ch == '.' && isDigit(l.peekAt(1))) {
+		if isDigit(ch) {
 			l.lexNumber()
 			return
 		}
@@ -317,9 +320,35 @@ func (l *Lexer) lex() {
 			l.lexIdentOrKeyword()
 			return
 		}
-		// Unknown character - skip it
+		// A character no token starts with. It is kept as a token of its
+		// own: a formatter must never drop source text, even text that
+		// will not compile.
 		l.advance()
+		l.emit(TokenIllegal, l.input[l.start:l.pos])
 	}
+}
+
+// lastType returns the type of the last token emitted that is not a comment or
+// a pragma, or TokenEOF at the start of the input.
+func (l *Lexer) lastType() TokenType {
+	for i := len(l.tokens) - 1; i >= 0; i-- {
+		if tt := l.tokens[i].Type; !IsComment(tt) {
+			return tt
+		}
+	}
+	return TokenEOF
+}
+
+// afterOperand reports whether the last token ends an assignable operand
+// (`x`, `a[i]`, `p^`, `f()`). The TwinCAT set, reset and reference operators
+// S=, R= and REF= can only follow such a target; anywhere else `s=1` is the
+// identifier s compared with 1.
+func (l *Lexer) afterOperand() bool {
+	switch l.lastType() {
+	case TokenIdent, TokenRBracket, TokenRParen, TokenCaret:
+		return true
+	}
+	return false
 }
 
 // lexString lexes a STRING ('...') or WSTRING ("...") literal. A literal may
@@ -483,23 +512,26 @@ func (l *Lexer) lexIdentOrKeyword() {
 	// elementary type name, so it skips the uppercase copy and the lookups.
 	// That matters because the copy is otherwise repeated for every
 	// identifier in the file, and most identifiers are not keywords.
-	if len(literal) > maxKeywordLen {
+	//
+	// A name behind a '.' is a member or an enum value, which is never a
+	// keyword even when it is spelled like one: stData.Type, fb.Method().
+	if len(literal) > maxKeywordLen || l.lastType() == TokenDot {
 		l.emit(TokenIdent, literal)
 		return
 	}
 
 	// Uppercase into a stack buffer rather than calling strings.ToUpper, which
-	// allocates whenever the identifier holds a lowercase letter. The keyword
-	// lookup hashes the uppercase form, so it needs no second pass.
+	// allocates whenever the identifier holds a lowercase letter.
 	var scratch [maxKeywordLen]byte
-	upper, h := upperASCII(scratch[:], literal)
-	tt, scalar, isKeyword := lookupKeywordHashed(upper, h)
+	upper := upperASCII(scratch[:], literal)
+	tt, isKeyword := lookupKeyword(upper)
+	scalar := isKeyword && IsScalarTypeToken(tt)
 
 	// Check for typed literals: T#5s, TIME#5s, INT#42, BOOL#TRUE, STRING#'x'
 	if l.pos < len(l.input) && l.peek() == '#' {
 		timePrefix := isTimePrefix(upper)
 
-		if timePrefix || scalar {
+		if timePrefix || scalar || isDatePrefix(upper) {
 			l.advance() // skip #
 			// Read the payload
 			switch {
@@ -533,17 +565,11 @@ func (l *Lexer) lexIdentOrKeyword() {
 					}
 				}
 			}
-			l.emit(TokenTypedLiteral, l.input[start:l.pos])
-			return
-		}
-	}
-
-	// Check for time literals: T#5s, TIME#5s, LT#5s
-	if isTimePrefix(upper) {
-		if l.pos < len(l.input) && l.peek() == '#' {
-			l.advance() // skip #
-			l.lexTimePayload()
-			l.emit(TokenTimeLiteral, l.input[start:l.pos])
+			if timePrefix {
+				l.emit(TokenTimeLiteral, l.input[start:l.pos])
+			} else {
+				l.emit(TokenTypedLiteral, l.input[start:l.pos])
+			}
 			return
 		}
 	}
@@ -558,21 +584,29 @@ func (l *Lexer) lexIdentOrKeyword() {
 }
 
 // maxKeywordLen is the length of the longest keyword and elementary type name
-// in Keywords ("END_FUNCTION_BLOCK"). An identifier longer than this cannot be
+// in keywords ("END_FUNCTION_BLOCK"). An identifier longer than this cannot be
 // either, so it needs no uppercase copy or lookup at all.
 const maxKeywordLen = len("END_FUNCTION_BLOCK")
 
-// upperASCII writes the uppercase form of s into dst and returns it together
-// with its hash, which is what the keyword table is probed with. s must not be
-// longer than dst; the caller guarantees that with maxKeywordLen.
-func upperASCII(dst []byte, s string) ([]byte, uint32) {
-	h := uint32(2166136261)
+// upperASCII writes the uppercase form of s into dst and returns it. s must not
+// be longer than dst; the caller guarantees that with maxKeywordLen.
+func upperASCII(dst []byte, s string) []byte {
 	for i := range len(s) {
-		c := toUpperASCII(s[i])
-		dst[i] = c
-		h = (h ^ uint32(c)) * 16777619
+		dst[i] = toUpperASCII(s[i])
 	}
-	return dst[:len(s)], h
+	return dst[:len(s)]
+}
+
+// isDatePrefix reports whether an uppercased identifier prefixes a date
+// literal by its short name (D#2024-01-01, LD#2024-01-01).
+func isDatePrefix(upper []byte) bool {
+	// D# and LD# are the short forms of DATE# and LDATE#. Unlike the long
+	// forms they are not type names, so the keyword table does not mark them.
+	switch string(upper) {
+	case "D", "LD":
+		return true
+	}
+	return false
 }
 
 // isTimePrefix reports whether an uppercased identifier prefixes a duration
@@ -613,8 +647,8 @@ func (l *Lexer) lexTimePayload() {
 }
 
 // startsTimeComponent reports whether the space at index i is followed by
-// another duration component: a number, or a unit that is itself followed by a
-// number (`T#1h 30m`).
+// another duration component: a number with its unit, or a unit that is itself
+// followed by a number (`T#1h 30m`).
 func startsTimeComponent(s string, i int) bool {
 	for i < len(s) && s[i] == ' ' {
 		i++
@@ -623,7 +657,13 @@ func startsTimeComponent(s string, i int) bool {
 		return false
 	}
 	if isDigit(s[i]) {
-		return true
+		// A number only continues the literal with its unit behind it
+		// (`T#1h 30m`); a bare number after the space is the next token.
+		i = skipDigits(s, i)
+		if i+1 < len(s) && s[i] == '.' && isDigit(s[i+1]) {
+			i = skipDigits(s, i+1)
+		}
+		return i < len(s) && isTimeUnitChar(s[i])
 	}
 	if !isTimeUnitChar(s[i]) {
 		return false
@@ -631,6 +671,15 @@ func startsTimeComponent(s string, i int) bool {
 	for i++; i < len(s) && (isTimeUnitChar(s[i]) || isDigit(s[i])); i++ {
 	}
 	return i < len(s) && isDigit(s[i])
+}
+
+// skipDigits returns the index of the first byte at or after i that is neither
+// a digit nor a digit separator.
+func skipDigits(s string, i int) int {
+	for i < len(s) && (isDigit(s[i]) || s[i] == '_') {
+		i++
+	}
+	return i
 }
 
 // lexStringPayload consumes the quoted payload of a typed string or character
@@ -688,8 +737,12 @@ func isHexDigitRaw(ch byte) bool {
 	return isDigitRaw(ch) || (ch >= 'A' && ch <= 'F') || (ch >= 'a' && ch <= 'f')
 }
 
+// isIdentStartRaw also accepts every byte of a multi-byte UTF-8 sequence.
+// IEC 61131-3 identifiers are ASCII, but TwinCAT accepts names such as
+// "Drehzahl_Ä", and splitting one into an identifier and stray bytes would
+// let the formatter put a space in the middle of the name.
 func isIdentStartRaw(ch byte) bool {
-	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch >= utf8.RuneSelf
 }
 
 func isBaseDigit(ch byte, base int) bool {
