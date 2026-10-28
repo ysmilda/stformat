@@ -112,6 +112,12 @@ automation interface, so the open editor is updated in place without a
 "modified outside the editor" prompt. Other files are formatted in their text
 editor buffer.
 
+Undo (Ctrl+Z) reverts formatting in one step in Visual Studio text editors,
+such as plain `.st` files. It does **not** undo formatting in TwinCAT editors:
+TwinCAT does not record changes made through its automation interface in its
+undo history, and undoing there can leave the editor showing text that no
+longer matches the object. Use source control to revert formatting.
+
 Problems are logged to `%LOCALAPPDATA%\StFormat\stformat.log`.
 
 ## Usage

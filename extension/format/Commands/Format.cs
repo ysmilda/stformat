@@ -14,6 +14,7 @@ using Microsoft.VisualStudio.Editor;
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Text.Editor;
+using Microsoft.VisualStudio.Text.Operations;
 using Microsoft.VisualStudio.TextManager.Interop;
 using TCatSysManagerLib;
 
@@ -195,8 +196,10 @@ namespace format
         }
 
         // Applies the formatted text of one part (declaration or
-        // implementation) of a PLC object through the automation property and
-        // reports whether it changed. Must run on the UI thread.
+        // implementation) of a PLC object and reports whether it changed.
+        // When the part is open in an editor, its buffer is edited, so Undo
+        // reverts the formatting in one step; setting the automation property
+        // replaces the text without an undo step. Must run on the UI thread.
         internal static bool ApplyPlcPart(string name, string part, string original, string formatted, Action<string> setText)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
@@ -207,9 +210,84 @@ namespace format
                 return false;
             }
 
+            if (TryFindPartBuffer(original, out ITextBuffer buffer, out ITextView view))
+            {
+                string current = buffer.CurrentSnapshot.GetText();
+                ReplaceText(buffer, view, current, Reshape(formatted, current));
+                Log.Info($"{name}: {part} reformatted in its editor");
+                return true;
+            }
+
             setText(wrapped);
-            Log.Info($"{name}: {part} reformatted");
+            Log.Info($"{name}: {part} reformatted through the automation interface");
             return true;
+        }
+
+        // Finds the one open editor buffer that holds text. TwinCAT editors
+        // show the declaration and the implementation in separate text views;
+        // which object a view belongs to is not exposed, so a buffer is only
+        // used when its text identifies it.
+        private static bool TryFindPartBuffer(string text, out ITextBuffer buffer, out ITextView view)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            buffer = null;
+            view = null;
+            string wanted = Normalize(text);
+            if (string.IsNullOrWhiteSpace(wanted))
+            {
+                // Every empty part looks alike.
+                return false;
+            }
+
+            foreach (IWpfTextView candidate in TextViewTracker.OpenViews)
+            {
+                ITextBuffer documentBuffer = candidate.TextDataModel.DocumentBuffer;
+                if (documentBuffer == buffer || Normalize(documentBuffer.CurrentSnapshot.GetText()) != wanted)
+                {
+                    continue;
+                }
+
+                if (buffer is not null)
+                {
+                    // Two buffers hold the same text; don't guess.
+                    buffer = null;
+                    view = null;
+                    return false;
+                }
+
+                buffer = documentBuffer;
+                view = candidate;
+            }
+
+            return buffer is not null;
+        }
+
+        // Gives formatted text the leading and trailing line breaks and the
+        // line ending of shape, the text it replaces.
+        private static string Reshape(string formatted, string shape)
+        {
+            string ending = shape.Contains("\r\n") ? "\r\n" : shape.Contains("\n") ? "\n" : "\r\n";
+
+            int lead = 0;
+            while (lead < shape.Length && (shape[lead] == '\r' || shape[lead] == '\n'))
+            {
+                lead++;
+            }
+
+            int trail = shape.Length;
+            while (trail > lead && (shape[trail - 1] == '\r' || shape[trail - 1] == '\n'))
+            {
+                trail--;
+            }
+
+            string body = formatted.Trim('\r', '\n').Replace("\r\n", "\n");
+            if (ending != "\n")
+            {
+                body = body.Replace("\n", ending);
+            }
+
+            return shape.Substring(0, lead) + body + shape.Substring(trail);
         }
 
         // An open document's text buffer, found through the running document
@@ -407,10 +485,21 @@ namespace format
                 caretColumn = caret.Position - line.Start.Position;
             }
 
-            using (ITextEdit edit = buffer.CreateEdit())
+            // One named transaction, so a single Undo reverts the formatting.
+            ITextUndoTransaction transaction = GetUndoHistory(buffer)?.CreateTransaction("Format Structured Text");
+            try
             {
-                edit.Replace(start, originalEnd - start, formatted.Substring(start, formattedEnd - start));
-                edit.Apply();
+                using (ITextEdit edit = buffer.CreateEdit())
+                {
+                    edit.Replace(start, originalEnd - start, formatted.Substring(start, formattedEnd - start));
+                    edit.Apply();
+                }
+
+                transaction?.Complete();
+            }
+            finally
+            {
+                transaction?.Dispose();
             }
 
             if (caretLine >= 0)
@@ -421,6 +510,15 @@ namespace format
                 ITextSnapshotLine line = snapshot.GetLineFromLineNumber(Math.Min(caretLine, snapshot.LineCount - 1));
                 view.Caret.MoveTo(new SnapshotPoint(snapshot, line.Start.Position + Math.Min(caretColumn, line.Length)));
             }
+        }
+
+        private static ITextUndoHistory GetUndoHistory(ITextBuffer buffer)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var componentModel = (IComponentModel)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(SComponentModel));
+            ITextUndoHistoryRegistry registry = componentModel?.GetService<ITextUndoHistoryRegistry>();
+            return registry is not null && registry.TryGetHistory(buffer, out ITextUndoHistory history) ? history : null;
         }
 
         // Monikers of the documents being formatted. Formatting saves the
