@@ -3,12 +3,14 @@ package handlers
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
 	"github.com/ysmilda/stformat/formatter"
+	"github.com/ysmilda/stformat/internal/lexer"
 )
 
 // XMLHandler formats TwinCAT XML files that embed Structured Text
@@ -17,13 +19,11 @@ import (
 // verbatim.
 type XMLHandler struct{}
 
-func (h *XMLHandler) Name() string { return "xml" }
-
+// Extensions returns the TwinCAT XML file extensions. Other XML files are left
+// alone: an <ST> or <Declaration> element there need not hold Structured Text.
 func (h *XMLHandler) Extensions() []string {
-	return []string{".tcpou", ".tcgvl", ".tcdut", ".tcio", ".tcproj", ".xml"}
+	return []string{".tcpou", ".tcgvl", ".tcdut", ".tcio"}
 }
-
-func (h *XMLHandler) IsST() bool { return false }
 
 type xmlEdit struct {
 	start, end int
@@ -68,7 +68,11 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 					if !strings.Contains(raw, "\n") {
 						ending = formatter.LineEnding(string(contents))
 					}
-					formatted := formatter.FormatWith(inner, ending)
+					formatted, err := formatter.FormatWith(inner, ending)
+					if err != nil {
+						start := int(tokStart) + len("<![CDATA[") + strings.Index(raw, inner)
+						return nil, inFile(err, contents, start)
+					}
 					// Declaration/implementation content starts and ends
 					// with a line break so git diffs are per-line readable.
 					wrapped := ending + strings.TrimRight(formatted, "\r\n") + ending
@@ -86,6 +90,18 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 	}
 
 	return applyEdits(contents, edits), nil
+}
+
+// inFile turns the line of a syntax error in an ST block, counted within the
+// block, into the line of the file, given the offset at which the block's text
+// starts. Other errors are returned as they are.
+func inFile(err error, contents []byte, start int) error {
+	var se *formatter.SyntaxError
+	if !errors.As(err, &se) {
+		return err
+	}
+	line := bytes.Count(contents[:start], []byte("\n")) + se.Line
+	return &formatter.SyntaxError{Line: line, Msg: se.Msg}
 }
 
 // isSTBlock reports whether the top of the element stack is a standard
@@ -107,24 +123,48 @@ func isCDATA(src []byte, from, to int64) bool {
 }
 
 // stStartKeywords are the keywords that a Structured Text section can begin
-// with.
+// with: a declaration, a VAR block, or the access modifier of a property
+// accessor (PUBLIC, then its VAR block).
 var stStartKeywords = []string{
-	"TYPE", "VAR", "FUNCTION", "FUNCTION_BLOCK", "PROGRAM", "INTERFACE",
+	"TYPE", "FUNCTION", "FUNCTION_BLOCK", "PROGRAM", "INTERFACE",
 	"CLASS", "METHOD", "PROPERTY", "ACTION", "STRUCT", "UNION", "NAMESPACE",
+	"VAR", "VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT", "VAR_TEMP", "VAR_GLOBAL",
+	"VAR_EXTERNAL", "VAR_CONFIG", "VAR_STAT", "VAR_INST", "VAR_ACCESS", "VAR_GENERIC",
+	"PUBLIC", "PRIVATE", "PROTECTED", "INTERNAL",
 }
 
 // looksLikeST is a guard to avoid reformatting text nodes that are not
 // Structured Text. It requires either a structural marker (a statement
-// terminator, an assignment, a call or an array) or a leading declaration
-// keyword. Counting words is not enough: prose such as "some prose, not code"
-// is two words and would have its keywords uppercased.
+// terminator, an assignment, a call or an array) or a declaration keyword as
+// the first token after any comments and pragmas. Counting words is not
+// enough: prose such as "some prose, not code" is two words and would have its
+// keywords uppercased.
 func looksLikeST(s string) bool {
 	if strings.ContainsAny(s, ";()[]") || strings.Contains(s, ":=") {
 		return true
 	}
-	word, _, _ := strings.Cut(strings.TrimSpace(s), " ")
-	return slices.Contains(stStartKeywords, strings.ToUpper(word))
+	var words []string
+	for _, tok := range lexer.Lex(s) {
+		if !lexer.IsComment(tok.Type) && tok.Type != lexer.TokenEOF {
+			words = append(words, strings.ToUpper(tok.Literal))
+			if len(words) == 2 {
+				break
+			}
+		}
+	}
+	if len(words) == 0 || !slices.Contains(stStartKeywords, words[0]) {
+		return false
+	}
+	// An access modifier opens ST only in front of a VAR block, so that prose
+	// such as "Public API" is left alone.
+	if slices.Contains(accessModifiers, words[0]) {
+		return len(words) == 2 && strings.HasPrefix(words[1], "VAR")
+	}
+	return true
 }
+
+// accessModifiers are the stStartKeywords that may start a property accessor.
+var accessModifiers = []string{"PUBLIC", "PRIVATE", "PROTECTED", "INTERNAL"}
 
 // applyEdits applies edits in ascending offset order, copying untouched
 // spans between each replacement.

@@ -35,7 +35,7 @@ PROGRAM commaInString
 Log(id := 1, msgFmtStr := 'one, two', strArg := 'three');
 END_PROGRAM
 
-// A string literal that runs over a line break is put back on one line.
+// A string literal that runs over a line break stays one token; the list the source broke open stays broken.
 PROGRAM stringSpanningLines
 ADSLOGSTR(
 msgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX,
@@ -45,7 +45,7 @@ strArg := sArg
 );
 END_PROGRAM
 
-// Over 120 columns, but breaking it would rewrite the literal on the next line.
+// Over 120 columns with a literal that runs onto the next line: the call breaks, the literal is left as it is.
 PROGRAM callWithMultilineString
 cal(a := 1, b := 2, c := 3, d := 4, e := 5, f := 6, g := 7, h := 8, i := 9, j := 10, k := 11, l := 12, m := 13, fmt := 'first,
 second');

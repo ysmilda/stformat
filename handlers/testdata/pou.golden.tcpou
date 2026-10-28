@@ -27,7 +27,7 @@ END_VAR
       <Implementation>
         <ST><![CDATA[
 n := 0;
-// Count
+// count
 WHILE r^ > 0 DO
 	n := n + 1;
 	r^ := r^ - 1;

@@ -5,7 +5,10 @@
 {attribute 'qualified_only'}
 
 TYPE S :
-	(A := 10, B := 20);
+	(
+		A := 10,
+		B := 20
+	);
 END_TYPE
 ]]></Declaration>
   </DUT>

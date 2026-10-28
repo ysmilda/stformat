@@ -3,10 +3,13 @@ package handlers
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ysmilda/stformat/formatter"
 )
 
 // TestXMLFiles formats every testdata/*.in.{tcpou,tcgvl,tcdut,tcio} file and
@@ -138,6 +141,12 @@ func TestLooksLikeST(t *testing.T) {
 		"(key := 'aaa', description := 'slot')": true,
 		"arr : ARRAY[0..3] OF INT;":             true,
 		"s : STRING(80) := 'hi';":               true,
+		"//note\nMETHOD m : UDINT\nVAR_INPUT\nEND_VAR": true,
+		"{attribute 'x'}\n(* a *)\nPROPERTY p : BOOL":  true,
+		"VAR\nEND_VAR":              true,
+		"PUBLIC\nVAR\nEND_VAR":      true,
+		"Public API for the module": false,
+		"// only a comment":         false,
 	}
 	for in, want := range cases {
 		if got := looksLikeST(in); got != want {
@@ -157,8 +166,8 @@ func TestRegistryExtensionMapping(t *testing.T) {
 			t.Errorf("ForExtension(%q): %v", ext, err)
 			continue
 		}
-		if h.Name() != "xml" {
-			t.Errorf("ForExtension(%q): expected xml handler, got %q", ext, h.Name())
+		if _, ok := h.(*XMLHandler); !ok {
+			t.Errorf("ForExtension(%q): expected xml handler, got %T", ext, h)
 		}
 	}
 	for _, ext := range []string{".st", ".iecst", ".tcst"} {
@@ -167,8 +176,45 @@ func TestRegistryExtensionMapping(t *testing.T) {
 			t.Errorf("ForExtension(%q): %v", ext, err)
 			continue
 		}
-		if h.Name() != "st" {
-			t.Errorf("ForExtension(%q): expected st handler, got %q", ext, h.Name())
+		if _, ok := h.(*STHandler); !ok {
+			t.Errorf("ForExtension(%q): expected st handler, got %T", ext, h)
 		}
+	}
+}
+
+// TestRegistryIgnoresOtherXML guards against formatting arbitrary XML: a
+// directory walk must not pick up .xml or .tcproj files, whose <ST> or
+// <Declaration> elements need not hold Structured Text.
+func TestRegistryIgnoresOtherXML(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	for _, ext := range []string{".xml", ".tcproj", ".plcproj"} {
+		if _, err := r.ForExtension(ext); err == nil {
+			t.Errorf("ForExtension(%q) found a handler, want ErrUnsupportedFileType", ext)
+		}
+	}
+}
+
+// TestXMLSyntaxErrorLine checks that a syntax error in an ST section names the
+// line of the TwinCAT file, not of the section.
+func TestXMLSyntaxErrorLine(t *testing.T) {
+	t.Parallel()
+	src := "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+		"<TcPlcObject>\n" +
+		"  <POU Name=\"P\">\n" +
+		"    <Declaration><![CDATA[PROGRAM P\nVAR\nEND_VAR]]></Declaration>\n" +
+		"    <Implementation>\n" +
+		"      <ST><![CDATA[\nx := 1;\nIF a THEN\ny := 2;\n]]></ST>\n" +
+		"    </Implementation>\n" +
+		"  </POU>\n" +
+		"</TcPlcObject>\n"
+	_, err := (&XMLHandler{}).Format([]byte(src))
+	var se *formatter.SyntaxError
+	if !errors.As(err, &se) {
+		t.Fatalf("Format: %v, want a *formatter.SyntaxError", err)
+	}
+	// IF a THEN is on line 10 of the file.
+	if se.Line != 10 || se.Msg != "IF is never closed" {
+		t.Errorf("error = %v, want line 10: IF is never closed", se)
 	}
 }

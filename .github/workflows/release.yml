@@ -8,9 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  GO_VERSION: '1.27'
-
 jobs:
   release:
     name: Release
@@ -22,7 +19,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - uses: goreleaser/goreleaser-action@v7
         with:
@@ -43,7 +40,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - uses: microsoft/setup-msbuild@v3
 

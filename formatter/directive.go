@@ -14,7 +14,7 @@ import (
 //
 // A directive may stand on its own line or trail code on a line. Inside an
 // ignored section the source text is copied verbatim: neither the token pass
-// nor the line-level post-processing may touch it. Directives themselves are
+// nor the line layout may touch it. Directives themselves are
 // never rewritten, so they keep their original spelling and case.
 //
 // "stformat:ignore" applies to the whole file, so it only counts in the
@@ -96,6 +96,30 @@ func lineDirective(line string) string {
 	return ""
 }
 
+// skipQuoted returns the index just past the quoted string starting at i,
+// treating doubled quote characters and a dollar escape as part of the
+// literal. It returns a value greater than len(s) when the literal is
+// unterminated.
+func skipQuoted(s string, i int) int {
+	quote := s[i]
+	i++
+	for i < len(s) {
+		switch {
+		case s[i] == '$' && i+1 < len(s):
+			i += 2
+		case s[i] == quote:
+			if i+1 < len(s) && s[i+1] == quote {
+				i += 2
+				continue
+			}
+			return i + 1
+		default:
+			i++
+		}
+	}
+	return len(s) + 1
+}
+
 // scanDirectives finds the ignored sections in a token stream. A file-level
 // "stformat:ignore" directive is reported through all, in which case runs must
 // not be used. Only a directive in the comment block at the top of the stream
@@ -103,7 +127,7 @@ func lineDirective(line string) string {
 func scanDirectives(tokens []lexer.Token) (all bool, runs []tokenRun) {
 	leading := true
 	for i, tok := range tokens {
-		if tok.Type != lexer.TokenLineComment && tok.Type != lexer.TokenBlockComment {
+		if !lexer.IsComment(tok.Type) {
 			leading = false
 			continue
 		}
@@ -112,19 +136,27 @@ func scanDirectives(tokens []lexer.Token) (all bool, runs []tokenRun) {
 			if leading {
 				return true, nil
 			}
+		// Sections do not nest: an "off" inside an ignored section and an
+		// "on" outside one are ordinary comments, so the first "on" after an
+		// "off" always ends the section.
 		case directiveOff:
-			runs = append(runs, tokenRun{start: i, end: unterminated})
+			if !open(runs) {
+				runs = append(runs, tokenRun{start: i, end: unterminated})
+			}
 		case directiveOn:
-			if n := len(runs); n > 0 {
-				runs[n-1].end = i
+			if open(runs) {
+				runs[len(runs)-1].end = i
 			}
 		}
 	}
 	// An "off" without a matching "on" ignores the rest of the file.
-	for i := range runs {
-		if runs[i].end == unterminated {
-			runs[i].end = len(tokens)
-		}
+	if open(runs) {
+		runs[len(runs)-1].end = len(tokens)
 	}
 	return false, runs
+}
+
+// open reports whether the last ignored section has not been ended yet.
+func open(runs []tokenRun) bool {
+	return len(runs) > 0 && runs[len(runs)-1].end == unterminated
 }

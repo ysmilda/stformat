@@ -14,7 +14,8 @@ import (
 // "stformat:ignore" in the leading comment block is streamed straight through:
 // the input is never parsed, so an ignored stream may be of any size. Any other
 // input is read in full and formatted, because wrapping a line at 120
-// characters needs the whole line and the block structure around it.
+// columns needs the whole line and the block structure around it; it fails as
+// Format does, before anything is written to dst.
 func Copy(dst io.Writer, src io.Reader) (int64, error) {
 	br := bufio.NewReader(src)
 	head, ignored := readLeadingComments(br)
@@ -26,7 +27,11 @@ func Copy(dst io.Writer, src io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return io.Copy(dst, strings.NewReader(Format(string(source))))
+	formatted, err := Format(string(source))
+	if err != nil {
+		return 0, err
+	}
+	return io.Copy(dst, strings.NewReader(formatted))
 }
 
 // readLeadingComments consumes the comment block at the top of br. It returns
@@ -38,15 +43,20 @@ func readLeadingComments(br *bufio.Reader) (head []byte, ignored bool) {
 	inBlockComment := false
 scan:
 	for {
+		// A last line without a line break comes back together with the
+		// error, so it is kept before the error is looked at: dropping it
+		// would lose the whole input when it is a single unterminated line.
 		line, err := br.ReadString('\n')
+		buf.WriteString(line)
 		if err != nil {
 			// End of input, or a read error that surfaces when the caller
-			// copies the rest of the stream.
+			// copies the rest of the stream. A directive on the partial line
+			// needs no look here: the whole input is now in head, and Format
+			// honours it.
 			break scan
 		}
-		buf.WriteString(line)
 
-		t := strings.TrimSpace(line)
+		t := strings.TrimSpace(strings.TrimPrefix(line, utf8BOM))
 		switch {
 		case inBlockComment:
 			inBlockComment = !strings.HasSuffix(t, "*)")

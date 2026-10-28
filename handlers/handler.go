@@ -12,14 +12,10 @@ var ErrUnsupportedFileType = errors.New("unsupported file type")
 
 // Handler formats source code of a specific type.
 type Handler interface {
-	// Name returns the handler's name.
-	Name() string
-	// Extensions returns the file extensions this handler supports.
+	// Extensions returns the lowercase file extensions this handler supports.
 	Extensions() []string
 	// Format formats the given file contents and returns the formatted output.
 	Format(contents []byte) ([]byte, error)
-	// IsST returns whether the handler processes plain ST (not wrapped in XML etc.).
-	IsST() bool
 }
 
 // Registry holds all registered handlers.
@@ -35,11 +31,6 @@ func NewRegistry() *Registry {
 			&XMLHandler{},
 		},
 	}
-}
-
-// Register adds a custom handler.
-func (r *Registry) Register(h Handler) {
-	r.handlers = append(r.handlers, h)
 }
 
 // ForExtension returns the handler for a file extension, or ErrUnsupportedFileType.

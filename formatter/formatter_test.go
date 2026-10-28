@@ -2,6 +2,7 @@ package formatter
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -84,14 +85,64 @@ func TestFormatIDs(t *testing.T) {
 			want: "PROGRAM p\nFOR i := 1 TO 10 DO\n\tIF x THEN\n\t\tEXIT;\n\tEND_IF\n\n\tRETURN;\nEND_FOR\nEND_PROGRAM\n",
 		},
 		{
+			name: "one blank line between statements is kept",
+			in:   "PROGRAM p\nVAR\n\n\ta : INT;\n\n\n\tb : INT;\n\nEND_VAR\na := 1;\n\nb := 2;\nEND_PROGRAM",
+			want: "PROGRAM p\nVAR\n\ta : INT;\n\n\tb : INT;\nEND_VAR\n\na := 1;\n\nb := 2;\nEND_PROGRAM\n",
+		},
+		{
+			name: "enum values each get a line",
+			in:   "TYPE E :\n\t(IDLE := 0, OK, BUSY);\nEND_TYPE",
+			want: "TYPE E :\n\t(\n\t\tIDLE := 0,\n\t\tOK,\n\t\tBUSY\n\t);\nEND_TYPE\n",
+		},
+		{
+			name: "list with comments keeps the break after its bracket",
+			in:   "TYPE E :\n(\n\ta:= 0,\t//first\n\tb := 1 \t//second\n)USINT;\nEND_TYPE",
+			want: "TYPE E :\n\t(\n\t\ta := 0, // first\n\t\tb := 1 // second\n\t) USINT;\nEND_TYPE\n",
+		},
+		{
+			name: "call with comments keeps the break after its bracket",
+			in:   "PROGRAM p\nx := F(\n a, // first\n b);\nEND_PROGRAM",
+			want: "PROGRAM p\nx := F(\n\ta, // first\n\tb\n);\nEND_PROGRAM\n",
+		},
+		{
+			name: "call through a dereference has no space before its bracket",
+			in:   "PROGRAM p\nSUPER^();\nTHIS^ (x := 1);\nEND_PROGRAM",
+			want: "PROGRAM p\nSUPER^();\nTHIS^(x := 1);\nEND_PROGRAM\n",
+		},
+		{
+			name: "semicolon after a block closer stays on its line",
+			in:   "PROGRAM p\nIF a THEN\nIF b THEN\nx := 1;\nEND_IF;\nEND_IF;\ny := 2;\nEND_PROGRAM",
+			want: "PROGRAM p\nIF a THEN\n\tIF b THEN\n\t\tx := 1;\n\tEND_IF;\nEND_IF;\n\ny := 2;\nEND_PROGRAM\n",
+		},
+		{
+			name: "semicolon after a method header stays on its line",
+			in:   "METHOD PUBLIC m : UINT;\nVAR_INPUT\nEND_VAR\n",
+			want: "METHOD PUBLIC m : UINT;\nVAR_INPUT\nEND_VAR\n",
+		},
+		{
+			name: "no blank line between a closed block and the next branch",
+			in:   "PROGRAM p\nIF a THEN\nIF b THEN\nx := 1;\nEND_IF\nELSIF c THEN\nIF d THEN\nx := 2;\nEND_IF\nELSE\nCASE e OF\n1: x := 3;\nEND_CASE\nEND_IF\nEND_PROGRAM",
+			want: "PROGRAM p\nIF a THEN\n\tIF b THEN\n\t\tx := 1;\n\tEND_IF\nELSIF c THEN\n\tIF d THEN\n\t\tx := 2;\n\tEND_IF\nELSE\n\tCASE e OF\n\t\t1:\n\t\t\tx := 3;\n\tEND_CASE\nEND_IF\nEND_PROGRAM\n",
+		},
+		{
+			name: "line comment loses its trailing blanks",
+			in:   "PROGRAM p\nx := 1; // note \t\n// \n//--  \nEND_PROGRAM",
+			want: "PROGRAM p\nx := 1; // note\n//\n//--\nEND_PROGRAM\n",
+		},
+		{
+			name: "call holding a comment is broken open",
+			in:   "PROGRAM p\nx := F(a, // first\n b, c);\nEND_PROGRAM",
+			want: "PROGRAM p\nx := F(\n\ta, // first\n\tb,\n\tc\n);\nEND_PROGRAM\n",
+		},
+		{
 			name: "comments on own line",
 			in:   "PROGRAM p\nx:=1; //set x\n(* block\ncomment *)\ny:=2;\nEND_PROGRAM",
-			want: "PROGRAM p\nx := 1;  // Set x\n(* Block\ncomment *)\ny := 2;\nEND_PROGRAM\n",
+			want: "PROGRAM p\nx := 1; // set x\n(* block\ncomment *)\ny := 2;\nEND_PROGRAM\n",
 		},
 		{
 			name: "trailing comment keeps its place",
 			in:   "PROGRAM p\nVAR\nx : INT; //the counter\nEND_VAR\nx := 1; //set x\ny := 2;\nEND_PROGRAM",
-			want: "PROGRAM p\nVAR\n\tx : INT;  // The counter\nEND_VAR\n\nx := 1;  // Set x\ny := 2;\nEND_PROGRAM\n",
+			want: "PROGRAM p\nVAR\n\tx : INT; // the counter\nEND_VAR\n\nx := 1; // set x\ny := 2;\nEND_PROGRAM\n",
 		},
 		{
 			name: "var colon alignment removed",
@@ -174,16 +225,18 @@ func TestFormatIDs(t *testing.T) {
 			want: "PROGRAM p\na := T#1h 30m 20s;\nb := LT#2d 12h;\nc := TIME#500ms;\nd := T#0MS;\nEND_PROGRAM\n",
 		},
 		{
+			// The source breaks the list open, so it stays open; the literal
+			// is one token and keeps its line break.
 			name: "string literal spanning lines is kept verbatim",
 			in:   "PROGRAM p\nADSLOGSTR(\nmsgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX,\nmsgFmtStr := 'addChild: To many subUnits,\n%s',\nstrArg := sArg\n);\nEND_PROGRAM",
-			want: "PROGRAM p\nADSLOGSTR(msgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX, msgFmtStr := 'addChild: To many subUnits,\n%s', strArg := sArg);\nEND_PROGRAM\n",
+			want: "PROGRAM p\nADSLOGSTR(\n\tmsgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX,\n\tmsgFmtStr := 'addChild: To many subUnits,\n%s',\n\tstrArg := sArg\n);\nEND_PROGRAM\n",
 		},
 		{
-			// The line is over 120 characters, but reflowing it would rewrite
-			// the literal that continues on the next line.
-			name: "overlong call with a multiline string argument is not reflowed",
+			// The first line is over 120 columns. Breaking the call moves the
+			// literal, never what is inside it.
+			name: "overlong call with a multiline string argument breaks around the literal",
 			in:   "PROGRAM p\ncal(a := 1, b := 2, c := 3, d := 4, e := 5, f := 6, g := 7, h := 8, i := 9, j := 10, k := 11, l := 12, m := 13, fmt := 'first,\nsecond');\nEND_PROGRAM",
-			want: "PROGRAM p\ncal(a := 1, b := 2, c := 3, d := 4, e := 5, f := 6, g := 7, h := 8, i := 9, j := 10, k := 11, l := 12, m := 13, fmt := 'first,\nsecond');\nEND_PROGRAM\n",
+			want: "PROGRAM p\ncal(\n\ta := 1,\n\tb := 2,\n\tc := 3,\n\td := 4,\n\te := 5,\n\tf := 6,\n\tg := 7,\n\th := 8,\n\ti := 9,\n\tj := 10,\n\tk := 11,\n\tl := 12,\n\tm := 13,\n\tfmt := 'first,\nsecond'\n);\nEND_PROGRAM\n",
 		},
 		{
 			name: "comma inside a string does not split call arguments",
@@ -193,12 +246,12 @@ func TestFormatIDs(t *testing.T) {
 		{
 			name: "trailing comment does not count towards the line length",
 			in:   "PROGRAM p\nsomeFunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue); // an explanation of the call\nEND_PROGRAM",
-			want: "PROGRAM p\nsomeFunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n);  // An explanation of the call\nEND_PROGRAM\n",
+			want: "PROGRAM p\nsomeFunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n); // an explanation of the call\nEND_PROGRAM\n",
 		},
 		{
 			name: "trailing comment moves to the then line when the condition wraps",
 			in:   "PROGRAM p\nIF flagOperationalReady AND flagMaintenanceOverride AND flagEmergencyStopActive AND flagPowerAvailable AND flagGateClosed AND flagInterlockEngaged AND flagSequenceRunning AND flagAbortRequested AND flagResetPermitted AND flagCycleComplete AND flagAutoModeSelected THEN // all flags\n    x := TRUE;\nEND_IF\nEND_PROGRAM",
-			want: "PROGRAM p\nIF flagOperationalReady\n\tAND flagMaintenanceOverride\n\tAND flagEmergencyStopActive\n\tAND flagPowerAvailable\n\tAND flagGateClosed\n\tAND flagInterlockEngaged\n\tAND flagSequenceRunning\n\tAND flagAbortRequested\n\tAND flagResetPermitted\n\tAND flagCycleComplete\n\tAND flagAutoModeSelected\nTHEN  // All flags\n\tx := TRUE;\nEND_IF\nEND_PROGRAM\n",
+			want: "PROGRAM p\nIF flagOperationalReady\n\tAND flagMaintenanceOverride\n\tAND flagEmergencyStopActive\n\tAND flagPowerAvailable\n\tAND flagGateClosed\n\tAND flagInterlockEngaged\n\tAND flagSequenceRunning\n\tAND flagAbortRequested\n\tAND flagResetPermitted\n\tAND flagCycleComplete\n\tAND flagAutoModeSelected\nTHEN // all flags\n\tx := TRUE;\nEND_IF\nEND_PROGRAM\n",
 		},
 		{
 			name: "stformat off and on ignore a section",
@@ -215,14 +268,14 @@ func TestFormatIDs(t *testing.T) {
 			// it and must stay as it is.
 			name: "call inside a block comment opened on a short line is not wrapped",
 			in:   "PROGRAM p\n(* block\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\n*)\ncal(a := 1, b := 2);\nEND_PROGRAM",
-			want: "PROGRAM p\n(* Block\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\n*)\ncal(a := 1, b := 2);\nEND_PROGRAM\n",
+			want: "PROGRAM p\n(* block\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\n*)\ncal(a := 1, b := 2);\nEND_PROGRAM\n",
 		},
 		{
 			// The comment opens and closes on the long line itself, so the
 			// line after it is back outside a comment and still wrappable.
 			name: "line after a self-closed block comment is wrapped",
 			in:   "PROGRAM p\n(* a long comment that just goes on and on and on and on and on and on and on and on and on *)\nveryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue);\nEND_PROGRAM",
-			want: "PROGRAM p\n(* A long comment that just goes on and on and on and on and on and on and on and on and on *)\nveryveryverylongfunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n);\nEND_PROGRAM\n",
+			want: "PROGRAM p\n(* a long comment that just goes on and on and on and on and on and on and on and on and on *)\nveryveryverylongfunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n);\nEND_PROGRAM\n",
 		},
 		{
 			name: "comment delimiter inside a string literal does not block wrapping",
@@ -237,7 +290,7 @@ func TestFormatIDs(t *testing.T) {
 		{
 			name: "directive trailing code stays on that line",
 			in:   "PROGRAM p\nIF a > 0 THEN\nx := 1; // stformat:off\n   y   :=   2;\n// stformat:on\nEND_IF\nEND_PROGRAM",
-			want: "PROGRAM p\nIF a > 0 THEN\n\tx := 1;  // stformat:off\n   y   :=   2;\n\t// stformat:on\nEND_IF\nEND_PROGRAM\n",
+			want: "PROGRAM p\nIF a > 0 THEN\n\tx := 1; // stformat:off\n   y   :=   2;\n\t// stformat:on\nEND_IF\nEND_PROGRAM\n",
 		},
 		{
 			name: "stformat ignore in the leading comment block leaves the file alone",
@@ -252,7 +305,7 @@ func TestFormatIDs(t *testing.T) {
 		{
 			name: "directive spelling and case are preserved",
 			in:   "PROGRAM p\nx:=1; // STFormat : Off\n    y   :=   2;\n// stformat:on\nz:=3;\nEND_PROGRAM",
-			want: "PROGRAM p\nx := 1;  // STFormat : Off\n    y   :=   2;\n// stformat:on\nz := 3;\nEND_PROGRAM\n",
+			want: "PROGRAM p\nx := 1; // STFormat : Off\n    y   :=   2;\n// stformat:on\nz := 3;\nEND_PROGRAM\n",
 		},
 		{
 			// A typed literal runs from its type name to its closing quote,
@@ -281,7 +334,7 @@ func TestFormatIDs(t *testing.T) {
 			// asked for a line break and the comment would be glued to it.
 			name: "comment on its own line after a block end keeps its line",
 			in:   "PROGRAM p\nx:=1;\nEND_PROGRAM\n// a comment about the program\nFUNCTION f\nEND_FUNCTION",
-			want: "PROGRAM p\nx := 1;\nEND_PROGRAM\n// A comment about the program\n\nFUNCTION f\nEND_FUNCTION\n",
+			want: "PROGRAM p\nx := 1;\nEND_PROGRAM\n// a comment about the program\n\nFUNCTION f\nEND_FUNCTION\n",
 		},
 		{
 			// A TYPE body is a list of values like a call's argument list, so
@@ -295,7 +348,7 @@ func TestFormatIDs(t *testing.T) {
 			// The bracket stays where it is and only the members break.
 			name: "type value list continued from the line above breaks its members",
 			in:   "TYPE continued :\n(  // the names\n\tA := 0, B := 1, C := 2, D := 3, E := 4, F := 5, G := 6, H := 7, I := 8, J := 9, K := 10, L := 11, M := 12, N := 13, O := 14, P := 15\n);\nEND_TYPE",
-			want: "TYPE continued :\n\t(  // The names\n\t\tA := 0,\n\t\tB := 1,\n\t\tC := 2,\n\t\tD := 3,\n\t\tE := 4,\n\t\tF := 5,\n\t\tG := 6,\n\t\tH := 7,\n\t\tI := 8,\n\t\tJ := 9,\n\t\tK := 10,\n\t\tL := 11,\n\t\tM := 12,\n\t\tN := 13,\n\t\tO := 14,\n\t\tP := 15\n\t);\nEND_TYPE\n",
+			want: "TYPE continued :\n\t( // the names\n\t\tA := 0,\n\t\tB := 1,\n\t\tC := 2,\n\t\tD := 3,\n\t\tE := 4,\n\t\tF := 5,\n\t\tG := 6,\n\t\tH := 7,\n\t\tI := 8,\n\t\tJ := 9,\n\t\tK := 10,\n\t\tL := 11,\n\t\tM := 12,\n\t\tN := 13,\n\t\tO := 14,\n\t\tP := 15\n\t);\nEND_TYPE\n",
 		},
 		{
 			// The line is over the limit, but the ')' it ends with closes
@@ -307,10 +360,12 @@ func TestFormatIDs(t *testing.T) {
 		},
 	}
 
+	// These cases are about layout, and a few are deliberately malformed, so
+	// they look at the layout without the structure check.
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			if got := Format(c.in); got != c.want {
+			if got := layout(c.in); got != c.want {
 				t.Errorf("Format() mismatch\n got: %q\nwant: %q", got, c.want)
 			}
 		})
@@ -320,8 +375,8 @@ func TestFormatIDs(t *testing.T) {
 func TestIdempotent(t *testing.T) {
 	t.Parallel()
 	in := "function_block fb\nvar\nx: bool:=true;\nend_var\nif x then\nx:=false;\nend_if\nend_function_block"
-	once := Format(in)
-	twice := Format(once)
+	once := mustFormat(t, in)
+	twice := mustFormat(t, once)
 	if once != twice {
 		t.Errorf("formatter not idempotent\nonce:  %q\ntwice: %q", once, twice)
 	}
@@ -420,8 +475,8 @@ func TestIdempotentRegression(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			once := Format(c.in)
-			twice := Format(once)
+			once := layout(c.in)
+			twice := layout(once)
 			if once != twice {
 				t.Errorf("second pass changed the output\nonce:  %q\ntwice: %q", once, twice)
 			}
@@ -456,7 +511,7 @@ func TestCopyStream(t *testing.T) {
 			if _, err := Copy(&buf, strings.NewReader(in)); err != nil {
 				t.Fatalf("Copy: %v", err)
 			}
-			if want := Format(in); buf.String() != want {
+			if want := mustFormat(t, in); buf.String() != want {
 				t.Errorf("Copy()\n got: %q\nwant: %q", buf.String(), want)
 			}
 			// The stream must also be stable under a second pass.
@@ -471,19 +526,50 @@ func TestCopyStream(t *testing.T) {
 	}
 }
 
-// TestNewHonoursDirectives guards the constructor: with the source text at hand
-// an ignored region is copied verbatim, just like Format does.
-func TestNewHonoursDirectives(t *testing.T) {
+// TestCopyUnterminatedInput guards the stream against losing a last line that
+// has no line break. When every line before it is a comment or blank, the
+// leading-comment scan reaches the end of the input, and that line must still
+// be part of what gets formatted.
+func TestCopyUnterminatedInput(t *testing.T) {
 	t.Parallel()
-	in := "PROGRAM p\n// stformat:off\n   y  :=  2;\n// stformat:on\nEND_PROGRAM\n"
-	want := Format(in)
-	if got := New(in).Run(); got != want {
-		t.Errorf("New().Run()\n got: %q\nwant: %q", got, want)
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{in: "x:=1;", want: "x := 1;\n"},
+		{in: "//hello", want: "// hello\n"},
+		{in: "// header\n\nx:=1;", want: "// header\n\nx := 1;\n"},
+		{in: "(* a\nb *)\nx:=1;", want: "(* a\nb *)\nx := 1;\n"},
+		{in: "// stformat:ignore", want: "// stformat:ignore"},
 	}
-	// A file-level ignore is returned untouched, ending included.
-	crlf := "// stformat:ignore\r\nPROGRAM p\r\n   x:=1;\r\nEND_PROGRAM"
-	if got := New(crlf).Run(); got != crlf {
-		t.Errorf("New().Run() with ignore\n got: %q\nwant: %q", got, crlf)
+	for _, c := range cases {
+		var buf bytes.Buffer
+		if _, err := Copy(&buf, strings.NewReader(c.in)); err != nil {
+			t.Fatalf("Copy(%q): %v", c.in, err)
+		}
+		if buf.String() != c.want {
+			t.Errorf("Copy(%q) = %q, want %q", c.in, buf.String(), c.want)
+		}
+	}
+}
+
+// TestByteOrderMark checks that a UTF-8 BOM survives formatting, in front of
+// the output, and does not get in the way of a leading directive.
+func TestByteOrderMark(t *testing.T) {
+	t.Parallel()
+	if got, want := mustFormat(t, utf8BOM+"x:=1;\n"), utf8BOM+"x := 1;\n"; got != want {
+		t.Errorf("Format with BOM = %q, want %q", got, want)
+	}
+	ignored := utf8BOM + "// stformat:ignore\nx:=1;\n"
+	if got := mustFormat(t, ignored); got != ignored {
+		t.Errorf("Format ignored file with BOM = %q, want it unchanged", got)
+	}
+	var buf bytes.Buffer
+	if _, err := Copy(&buf, strings.NewReader(ignored)); err != nil {
+		t.Fatal(err)
+	}
+	if buf.String() != ignored {
+		t.Errorf("Copy ignored file with BOM = %q, want it unchanged", buf.String())
 	}
 }
 
@@ -493,7 +579,7 @@ func TestNewHonoursDirectives(t *testing.T) {
 func TestLineEndings(t *testing.T) {
 	t.Parallel()
 	body := "PROGRAM p\nVAR\n x : INT; //the counter\nEND_VAR\n(* block\ncomment *)\nx:=1; //set x\nEND_PROGRAM\n"
-	wantBody := "PROGRAM p\nVAR\n\tx : INT;  // The counter\nEND_VAR\n\n(* Block\ncomment *)\nx := 1;  // Set x\nEND_PROGRAM\n"
+	wantBody := "PROGRAM p\nVAR\n\tx : INT; // the counter\nEND_VAR\n\n(* block\ncomment *)\nx := 1; // set x\nEND_PROGRAM\n"
 
 	cases := []struct {
 		name string
@@ -515,11 +601,11 @@ func TestLineEndings(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			got := Format(c.in)
+			got := mustFormat(t, c.in)
 			if got != c.want {
 				t.Errorf("Format()\n got: %q\nwant: %q", got, c.want)
 			}
-			if again := Format(got); again != got {
+			if again := mustFormat(t, got); again != got {
 				t.Errorf("not idempotent\nonce: %q\ntwice: %q", got, again)
 			}
 		})
@@ -554,15 +640,15 @@ func TestLineEnding(t *testing.T) {
 func TestFormatWith(t *testing.T) {
 	t.Parallel()
 	source := "PROGRAM p\nx:=1;\ny:=2;\nEND_PROGRAM\n"
-	if got, want := FormatWith(source, "\r\n"), "PROGRAM p\r\nx := 1;\r\ny := 2;\r\nEND_PROGRAM\r\n"; got != want {
+	if got, want := mustFormatWith(t, source, "\r\n"), "PROGRAM p\r\nx := 1;\r\ny := 2;\r\nEND_PROGRAM\r\n"; got != want {
 		t.Errorf("FormatWith CRLF\n got: %q\nwant: %q", got, want)
 	}
-	if got, want := FormatWith(source, "\n"), Format(source); got != want {
+	if got, want := mustFormatWith(t, source, "\n"), mustFormat(t, source); got != want {
 		t.Errorf("FormatWith LF\n got: %q\nwant: %q", got, want)
 	}
 	// An unusable ending falls back to the one in the source.
 	crlf := strings.ReplaceAll(source, "\n", "\r\n")
-	if got, want := FormatWith(crlf, "\r"), Format(crlf); got != want {
+	if got, want := mustFormatWith(t, crlf, "\r"), mustFormat(t, crlf); got != want {
 		t.Errorf("FormatWith bad ending\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -574,15 +660,22 @@ func TestNormalizeComment(t *testing.T) {
 		in   string
 		want string
 	}{
-		{name: "line comment adds space and capital", in: "//set x", want: "// Set x"},
-		{name: "line comment adds space", in: "//set", want: "// Set"},
-		{name: "line comment capitalizes", in: "// set x", want: "// Set x"},
-		{name: "line comment already correct", in: "// Set x", want: "// Set x"},
+		{name: "line comment gets a space", in: "//set x", want: "// set x"},
+		{name: "case is kept", in: "//Set", want: "// Set"},
+		{name: "line comment already spaced", in: "// set x", want: "// set x"},
+		{name: "indentation inside comment kept", in: "//   indented", want: "//   indented"},
+		{name: "commented-out code keeps its case", in: "//x := 1;", want: "// x := 1;"},
+		{name: "doc comment untouched", in: "///doc", want: "///doc"},
+		{name: "rule untouched", in: "//////////", want: "//////////"},
+		{name: "dashes untouched", in: "//---", want: "//---"},
+		{name: "non-ascii word gets a space", in: "//Änderung", want: "// Änderung"},
 		{name: "empty line comment", in: "//", want: "//"},
 		{name: "whitespace line comment", in: "// ", want: "//"},
-		{name: "block comment adds space and capital", in: "(*block*)", want: "(* Block*)"},
-		{name: "block comment capitalizes", in: "(* block *)", want: "(* Block *)"},
-		{name: "multiline block comment", in: "(* block\ncomment *)", want: "(* Block\ncomment *)"},
+		{name: "block comment gets a space", in: "(*block*)", want: "(* block*)"},
+		{name: "block comment already spaced", in: "(* block *)", want: "(* block *)"},
+		{name: "multiline block comment", in: "(* block\ncomment *)", want: "(* block\ncomment *)"},
+		{name: "banner untouched", in: "(*****************)", want: "(*****************)"},
+		{name: "short banner untouched", in: "(*****)", want: "(*****)"},
 		{name: "pragma unchanged", in: "{attribute 'xl' := true}", want: "{attribute 'xl' := true}"},
 		{name: "empty block comment", in: "(* *)", want: "(* *)"},
 	}
@@ -593,5 +686,193 @@ func TestNormalizeComment(t *testing.T) {
 				t.Errorf("normalizeComment(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// TestFormatFixes pins the layout of constructs that used to be mangled.
+func TestFormatFixes(t *testing.T) {
+	t.Parallel()
+	// A call whose code fits in 120 bytes but, behind one tab of indentation,
+	// takes more than 120 columns.
+	call := "foo(" + strings.Repeat("a", 55) + ", " + strings.Repeat("b", 55) + ");"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "short date literals",
+			in:   "d:=D#2020-01-01; e:=ld#2020-01-01;",
+			want: "d := D#2020-01-01;\ne := ld#2020-01-01;\n",
+		},
+		{
+			name: "second off inside an ignored section is a comment",
+			in:   "// stformat:off\na:=1;\n// stformat:off\nb:=2;\n// stformat:on\nc:=3;\n",
+			want: "// stformat:off\na:=1;\n// stformat:off\nb:=2;\n// stformat:on\nc := 3;\n",
+		},
+		{
+			name: "on outside an ignored section is a comment",
+			in:   "// stformat:off\na:=1;\n// stformat:on\nb:=2;\n// stformat:on\nc:=3;\n",
+			want: "// stformat:off\na:=1;\n// stformat:on\nb := 2;\n// stformat:on\nc := 3;\n",
+		},
+		{
+			name: "jump label",
+			in:   "PROGRAM p\nJMP lbl;\nlbl : x:=1;\nEND_PROGRAM",
+			want: "PROGRAM p\nJMP lbl;\nlbl: x := 1;\nEND_PROGRAM\n",
+		},
+		{
+			name: "declaration colon is not a label",
+			in:   "PROGRAM p\nVAR\nx:INT;\nEND_VAR\nEND_PROGRAM",
+			want: "PROGRAM p\nVAR\n\tx : INT;\nEND_VAR\nEND_PROGRAM\n",
+		},
+		{
+			name: "NOT with parentheses",
+			in:   "x:=NOT (a) AND NOT b;",
+			want: "x := NOT(a) AND NOT b;\n",
+		},
+		{
+			name: "repetition in an array initialiser",
+			in:   "VAR\narr : ARRAY[1..10] OF INT := [10 (0)];\nEND_VAR",
+			want: "VAR\n\tarr : ARRAY[1..10] OF INT := [10(0)];\nEND_VAR\n",
+		},
+		{
+			name: "line width counts the tab as four columns",
+			in:   "IF x THEN\n" + call + "\nEND_IF",
+			want: "IF x THEN\n\tfoo(\n\t\t" + strings.Repeat("a", 55) + ",\n\t\t" + strings.Repeat("b", 55) + "\n\t);\nEND_IF\n",
+		},
+		{
+			name: "line width counts characters, not bytes",
+			in:   "s := '" + strings.Repeat("ä", 100) + "';",
+			want: "s := '" + strings.Repeat("ä", 100) + "';\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := mustFormat(t, c.in)
+			if got != c.want {
+				t.Errorf("Format()\n got: %q\nwant: %q", got, c.want)
+			}
+			if again := mustFormat(t, got); again != got {
+				t.Errorf("not idempotent\n once: %q\ntwice: %q", got, again)
+			}
+		})
+	}
+}
+
+// TestVerify checks the safety net: whitespace, keyword case and comment
+// spacing may change, anything else is refused.
+func TestVerify(t *testing.T) {
+	t.Parallel()
+	ok := [][2]string{
+		{"x:=1;", "x := 1;\n"},
+		{"if a then b; end_if", "IF a THEN\n\tb;\nEND_IF\n"},
+		{"//note", "// note"},
+		{"a := 1;\r\nb := 2;\r\n", "a := 1;\nb := 2;\n"},
+		{utf8BOM + "x:=1;", utf8BOM + "x := 1;\n"},
+		{"s := '\r\r\n';", "s := '\r\n';"},
+	}
+	for _, c := range ok {
+		if err := Verify(c[0], c[1]); err != nil {
+			t.Errorf("Verify(%q, %q) = %v, want nil", c[0], c[1], err)
+		}
+	}
+	bad := [][2]string{
+		{"x := 1;", "x := 2;"},                 // literal changed
+		{"x := y;", "x := Y;"},                 // identifier case is not a keyword's
+		{"x := 'a';", "x := 'A';"},             // string content
+		{"x := y ? 1;", "x := y 1;"},           // dropped character
+		{"x := 1;", "x := 1;;"},                // added token
+		{"// Note", "// note"},                 // comment text
+		{"{attribute 'a'}", "{attribute 'b'}"}, // pragma text
+		{utf8BOM + "x := 1;", "x := 1;"},       // byte order mark dropped
+	}
+	for _, c := range bad {
+		if err := Verify(c[0], c[1]); err == nil {
+			t.Errorf("Verify(%q, %q) = nil, want an error", c[0], c[1])
+		}
+	}
+}
+
+// mustFormat is Format for a source the test expects to format cleanly.
+func mustFormat(t *testing.T, src string) string {
+	t.Helper()
+	out, err := Format(src)
+	if err != nil {
+		t.Fatalf("Format(%q): %v", src, err)
+	}
+	return out
+}
+
+// mustFormatWith is FormatWith for a source the test expects to format
+// cleanly.
+func mustFormatWith(t *testing.T, src, ending string) string {
+	t.Helper()
+	out, err := FormatWith(src, ending)
+	if err != nil {
+		t.Fatalf("FormatWith(%q): %v", src, err)
+	}
+	return out
+}
+
+// TestSyntaxErrors checks that source with a block or bracket opened and never
+// closed, or closed and never opened, is refused with the line to look at.
+func TestSyntaxErrors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		line int
+		msg  string
+	}{
+		{"unclosed IF", "PROGRAM p\nIF a THEN\nx := 1;\nEND_PROGRAM\n", 4, "END_PROGRAM while the IF from line 2 is still open"},
+		{"IF at end of input", "IF a THEN\nx := 1;\n", 1, "IF is never closed"},
+		{"END_IF without IF", "x := 1;\nEND_IF\n", 2, "END_IF without a matching IF"},
+		{"ELSE without IF", "x := 1;\nELSE\n", 2, "ELSE without a matching IF"},
+		{"END_FOR closing a WHILE", "WHILE a DO\nx := 1;\nEND_FOR\n", 3, "END_FOR while the WHILE from line 1 is still open"},
+		{"unclosed VAR", "VAR\nx : INT;\n", 1, "VAR is never closed"},
+		{"stray paren", "x := (a + b));\n", 1, ") without a matching ("},
+		{"unclosed paren", "x := f(a,\nb;\n", 1, "( is never closed"},
+		{"mismatched bracket", "x := a[1);\n", 1, ") closes the [ from line 1"},
+		{"STEP without END_STEP is a name", "STEP s1:\nx := 1;\nEND_TRANSITION\n", 3, "END_TRANSITION without a matching TRANSITION"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := Format(c.in)
+			var se *SyntaxError
+			if !errors.As(err, &se) {
+				t.Fatalf("Format(%q) = %q, %v; want a *SyntaxError", c.in, out, err)
+			}
+			if out != "" {
+				t.Errorf("Format returned output %q along with the error", out)
+			}
+			if se.Line != c.line || se.Msg != c.msg {
+				t.Errorf("error = line %d: %q, want line %d: %q", se.Line, se.Msg, c.line, c.msg)
+			}
+		})
+	}
+}
+
+// TestWellFormedFragments checks inputs the structure check must accept: the
+// fragments TwinCAT stores in its XML files, and ignored regions.
+func TestWellFormedFragments(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		// A POU declaration without its END_ keyword, as in a TcPOU.
+		"FUNCTION_BLOCK FB\nVAR_INPUT\nx : INT;\nEND_VAR\n",
+		"METHOD M : BOOL\nVAR_INPUT\nx : INT;\nEND_VAR\n",
+		// An implementation section: statements only.
+		"IF a THEN\nx := 1;\nEND_IF\n",
+		// A CASE with nothing but an ELSE branch.
+		"CASE n OF\nELSE\nx := 1;\nEND_CASE\n",
+		// An ignored region may hide half of a block.
+		"IF a THEN\n// stformat:off\nEND_IF IF b THEN\n// stformat:on\nEND_IF\n",
+		// A file-level ignore is never checked.
+		"// stformat:ignore\nEND_IF\n",
+	} {
+		if _, err := Format(in); err != nil {
+			t.Errorf("Format(%q): %v", in, err)
+		}
 	}
 }

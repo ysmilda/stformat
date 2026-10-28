@@ -3,25 +3,25 @@ VAR
 	x : INT;
 END_VAR
 
-METHOD public compute : INT
+METHOD PUBLIC compute : INT
 compute := x * 2;
 END_METHOD
-METHOD protected helper : INT
+METHOD PROTECTED helper : INT
 helper := THIS.x + SUPER.get();
 END_METHOD
-METHOD abstract enforce
+METHOD ABSTRACT enforce
 END_METHOD
-METHOD final lockit
+METHOD FINAL lockit
 register := 1;
 END_METHOD
-PROPERTY private value : INT
+PROPERTY PRIVATE value : INT
 END_PROPERTY
 END_CLASS
 
 INTERFACE my_interface
-METHOD public cycle : INT
+METHOD PUBLIC cycle : INT
 END_METHOD
-METHOD protected semi : INT
+METHOD PROTECTED semi : INT
 END_METHOD
 END_INTERFACE
 
@@ -30,7 +30,7 @@ VAR
 	pos : INT;
 END_VAR
 
-METHOD public move : INT
+METHOD PUBLIC move : INT
 move := pos;
 END_METHOD
 END_FUNCTION_BLOCK

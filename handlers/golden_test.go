@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ysmilda/stformat/internal/lexer"
+	"github.com/ysmilda/stformat/formatter"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -83,7 +83,7 @@ func runGolden(t *testing.T, h Handler, input string) {
 
 	// Nothing lost: for an XML file that is the ST inside the CDATA sections,
 	// for a plain ST file the whole text.
-	if h.Name() != "xml" {
+	if _, isXML := h.(*XMLHandler); !isXML {
 		assertTokensPreserved(t, string(in), string(got))
 		return
 	}
@@ -96,11 +96,8 @@ func runGolden(t *testing.T, h Handler, input string) {
 	}
 }
 
-// assertTokensPreserved verifies that formatting only rearranges whitespace,
-// keyword case and keyword aliases: every token must keep its type, and all
-// non-keyword literals (identifiers, numbers, strings, pragmas) must be
-// byte-identical. Comment tokens are exempt because the formatter normalises
-// comment content (space and capital letter after the opening).
+// assertTokensPreserved verifies with formatter.Verify that formatting only
+// changed whitespace, keyword case and comment spacing.
 func assertTokensPreserved(t *testing.T, input, output string) {
 	t.Helper()
 	if msg := tokensPreserved(input, output); msg != "" {
@@ -112,36 +109,10 @@ func assertTokensPreserved(t *testing.T, input, output string) {
 // first violation instead of failing on a test, so that the property sweep can
 // shrink an input down to what makes it fail.
 func tokensPreserved(input, output string) string {
-	ti := tokensOf(input)
-	to := tokensOf(output)
-	if len(ti) != len(to) {
-		return fmt.Sprintf("token count changed: %d -> %d\n%s", len(ti), len(to), diffStrings(input, output))
-	}
-	for i := range min(len(to), len(ti)) {
-		a, b := ti[i], to[i]
-		if a.Type != b.Type {
-			return fmt.Sprintf("token %d type changed: %s -> %s\n%s", i, lexer.TokenName(a.Type), lexer.TokenName(b.Type), diffStrings(input, output))
-		}
-		// Keywords may be normalised in spelling and case (if -> IF, tod ->
-		// TOD); the token type already carries their meaning.
-		// Comments are normalised (space + capital letter) so their literal
-		// may change.
-		if lexer.KeywordSpelling(a.Type) == "" &&
-			a.Type != lexer.TokenLineComment && a.Type != lexer.TokenBlockComment &&
-			a.Literal != b.Literal {
-			return fmt.Sprintf("token %d literal changed: %q -> %q\n%s", i, a.Literal, b.Literal, diffStrings(input, output))
-		}
+	if err := formatter.Verify(input, output); err != nil {
+		return err.Error() + "\n" + diffStrings(input, output)
 	}
 	return ""
-}
-
-// tokensOf lexes src and returns all tokens except the trailing EOF token.
-func tokensOf(src string) []lexer.Token {
-	toks := lexer.Lex(src)
-	for len(toks) > 0 && toks[len(toks)-1].Type == lexer.TokenEOF {
-		toks = toks[:len(toks)-1]
-	}
-	return toks
 }
 
 // diffStrings renders a per-line side-by-side diff of two strings.
