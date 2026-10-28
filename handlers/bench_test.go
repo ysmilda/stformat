@@ -122,8 +122,8 @@ func BenchmarkCorpusAlreadyFormatted(b *testing.B) {
 }
 
 // BenchmarkWrapPath formats the golden testdata, which is mostly long lines
-// built to trip the 120 column wrap. It is a regression guard for the reflow
-// path, not a measurement of real projects.
+// built to trip the 120 column wrap. It is a regression guard for the line
+// layout, not a measurement of real projects.
 func BenchmarkWrapPath(b *testing.B) {
 	benchFormat(b, loadCorpus(b, "testdata", "st", "iecst", "tcst"), &STHandler{})
 }

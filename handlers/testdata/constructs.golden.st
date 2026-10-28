@@ -60,3 +60,10 @@ IF Step > 3 THEN
 	Step := 0;
 END_IF
 END_PROGRAM
+// An opener right after a POU header, with no VAR block between.
+
+PROGRAM Direct
+STEP Run:
+	DriveTheAxisToPosition(Position := fTargetPositionInMillimetres, Velocity := fVelocityLimit, Acceleration := fAcc);
+END_STEP
+END_PROGRAM

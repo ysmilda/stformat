@@ -55,7 +55,9 @@ END_FUNCTION_BLOCK
 TYPE states :
 	(
 	// the state names
-	a := 0, b := 1);
+		a := 0,
+		b := 1
+	);
 END_TYPE
 
 FUNCTION_BLOCK child PUBLIC EXTENDS base

@@ -48,6 +48,10 @@ END_PROGRAM
 // A string spanning lines is one token, so the comma on the next line is content.
 
 PROGRAM stringSpanningLines
-log(a := 1, fmt := 'first,
-second', b := 2);
+log(
+	a := 1,
+	fmt := 'first,
+second',
+	b := 2
+);
 END_PROGRAM

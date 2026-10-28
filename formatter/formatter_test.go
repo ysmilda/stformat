@@ -175,16 +175,18 @@ func TestFormatIDs(t *testing.T) {
 			want: "PROGRAM p\na := T#1h 30m 20s;\nb := LT#2d 12h;\nc := TIME#500ms;\nd := T#0MS;\nEND_PROGRAM\n",
 		},
 		{
+			// The source breaks the list open, so it stays open; the literal
+			// is one token and keeps its line break.
 			name: "string literal spanning lines is kept verbatim",
 			in:   "PROGRAM p\nADSLOGSTR(\nmsgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX,\nmsgFmtStr := 'addChild: To many subUnits,\n%s',\nstrArg := sArg\n);\nEND_PROGRAM",
-			want: "PROGRAM p\nADSLOGSTR(msgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX, msgFmtStr := 'addChild: To many subUnits,\n%s', strArg := sArg);\nEND_PROGRAM\n",
+			want: "PROGRAM p\nADSLOGSTR(\n\tmsgCtrlMask := ADSLOG_MSGTYPE_ERROR OR ADSLOG_MSGTYPE_MSGBOX,\n\tmsgFmtStr := 'addChild: To many subUnits,\n%s',\n\tstrArg := sArg\n);\nEND_PROGRAM\n",
 		},
 		{
-			// The line is over 120 characters, but reflowing it would rewrite
-			// the literal that continues on the next line.
-			name: "overlong call with a multiline string argument is not reflowed",
+			// The first line is over 120 columns. Breaking the call moves the
+			// literal, never what is inside it.
+			name: "overlong call with a multiline string argument breaks around the literal",
 			in:   "PROGRAM p\ncal(a := 1, b := 2, c := 3, d := 4, e := 5, f := 6, g := 7, h := 8, i := 9, j := 10, k := 11, l := 12, m := 13, fmt := 'first,\nsecond');\nEND_PROGRAM",
-			want: "PROGRAM p\ncal(a := 1, b := 2, c := 3, d := 4, e := 5, f := 6, g := 7, h := 8, i := 9, j := 10, k := 11, l := 12, m := 13, fmt := 'first,\nsecond');\nEND_PROGRAM\n",
+			want: "PROGRAM p\ncal(\n\ta := 1,\n\tb := 2,\n\tc := 3,\n\td := 4,\n\te := 5,\n\tf := 6,\n\tg := 7,\n\th := 8,\n\ti := 9,\n\tj := 10,\n\tk := 11,\n\tl := 12,\n\tm := 13,\n\tfmt := 'first,\nsecond'\n);\nEND_PROGRAM\n",
 		},
 		{
 			name: "comma inside a string does not split call arguments",

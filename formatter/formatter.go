@@ -95,17 +95,22 @@ type printer struct {
 	// their body. It is maintained by push/pop instead of being recounted
 	// from the stack on every line break.
 	depth     int
-	buf       strings.Builder
+	buf       []byte
 	lastCh    byte
 	prevCh    byte
 	lineStart bool
 	pendingNL bool
 
 	pendingBlank bool
-	// inner lists, in ascending order, the output lines that continue a
-	// multi-line string literal or comment: text that the line-level pass
-	// must leave alone.
-	inner []int
+	// lineBegin is where the current output line starts in buf, and spans
+	// are the tokens written on it so far, which endLine lays out once the
+	// line is complete. frozen marks a line that holds verbatim text and is
+	// kept as it is.
+	lineBegin int
+	spans     []span
+	frozen    bool
+	// carry is how many brackets earlier lines left open.
+	carry int
 	// lastLit is the text of the last token attach wrote.
 	lastLit string
 	// glue makes the next token attach without the space it would otherwise
@@ -136,7 +141,7 @@ func newPrinter(source, ending string) *printer {
 	// Formatting mostly preserves length and adds indentation and spacing, so
 	// the input size is a good first guess. Sizing the builder up front avoids
 	// the repeated grow-and-copy of the whole output.
-	f.buf.Grow(len(text))
+	f.buf = make([]byte, 0, len(text)+len(text)/8)
 	if all, runs := scanDirectives(f.tokens); !all {
 		f.runs = runs
 		f.checked = len(runs) == 0
@@ -238,10 +243,11 @@ func (f *printer) run() string {
 	// ends with a single line break, unless the input ends inside a token
 	// that never closes: a break written now would become part of its text.
 	f.pendingNL, f.pendingBlank = false, false
+	f.endLine()
 	if f.lastCh != '\n' && !endsOpen(f.source, f.tokens) {
 		f.writeCh('\n')
 	}
-	out := postProcess(f.buf.String(), f.inner)
+	out := string(f.buf)
 	if f.ending != "\n" {
 		out = strings.ReplaceAll(out, "\n", f.ending)
 	}
@@ -289,10 +295,12 @@ func (f *printer) emitVerbatim() bool {
 		// still open at the end of the input.
 		text = strings.TrimRight(text, " \t")
 	}
-	f.markInner(text)
+	f.frozen = true
 	f.writeRaw(text)
 	if f.lastCh == '\n' {
 		// The verbatim text ends its own line; indent what follows.
+		f.endLine()
+		f.lineBegin = len(f.buf)
 		f.requestNL()
 	}
 	f.pos = run.end
@@ -352,7 +360,7 @@ func (f *printer) advance() lexer.Token {
 
 func (f *printer) writeCh(c byte) {
 	f.prevCh = f.lastCh
-	f.buf.WriteByte(c)
+	f.buf = append(f.buf, c)
 	f.lastCh = c
 	f.lineStart = c == '\n'
 }
@@ -379,10 +387,10 @@ func (f *printer) flush() {
 	blank := f.pendingBlank
 	f.pendingBlank = false
 	if f.lastCh != '\n' {
-		f.writeCh('\n')
+		f.newline()
 	}
 	if blank {
-		f.writeCh('\n')
+		f.newline()
 	}
 	for range f.depth {
 		f.writeCh('\t')
@@ -401,22 +409,12 @@ func (f *printer) attach(s string) {
 	if s != "" && f.mergesWith(s) {
 		f.writeCh(' ')
 	}
-	f.markInner(s)
+	// Every token is written while it is the current one, so the position
+	// says which token of the input the text is.
+	start := len(f.buf)
 	f.writeRaw(s)
+	f.spans = append(f.spans, span{start: start, end: len(f.buf), tok: f.pos})
 	f.lastLit = s
-}
-
-// markInner records the output lines that s, about to be written, continues
-// onto: the lines after its first one. They hold the inside of a multi-line
-// token or an ignored region, which the line-level pass must leave alone.
-func (f *printer) markInner(s string) {
-	// A final line break ends the text; the line after it is not part of it.
-	if n := strings.Count(strings.TrimSuffix(s, "\n"), "\n"); n > 0 {
-		first := strings.Count(f.buf.String(), "\n") + 1
-		for i := range n {
-			f.inner = append(f.inner, first+i)
-		}
-	}
 }
 
 // mergesWith reports whether s, written right after the output so far, would
@@ -449,7 +447,7 @@ func (f *printer) mergesWith(s string) bool {
 // numberBeforeDot reports whether the output ends in a number followed by a
 // '.', such as "1_0.".
 func (f *printer) numberBeforeDot() bool {
-	out := f.buf.String()
+	out := f.buf
 	end := len(out) - 1 // the '.'
 	i := end
 	for i > 0 && isWordByte(out[i-1]) {
@@ -472,6 +470,17 @@ func isWordByte(c byte) bool {
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
+func isIdentChar(b byte) bool {
+	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || isDigit(b)
+}
+
+// trimBlank removes the spaces and tabs around s. strings.TrimSpace would also
+// remove characters such as a form feed, which are tokens of the source that
+// the pass must keep.
+func trimBlank(s string) string {
+	return strings.Trim(s, " \t")
+}
+
 // writeRaw copies text from the source unchanged, newlines included.
 //
 // Only the tail goes through writeCh one byte at a time; the rest is handed to
@@ -485,7 +494,7 @@ func (f *printer) writeRaw(s string) {
 		return
 	}
 	n := len(s)
-	f.buf.WriteString(s[:n-tailTrackedLen])
+	f.buf = append(f.buf, s[:n-tailTrackedLen]...)
 	for i := n - tailTrackedLen; i < n; i++ {
 		f.writeCh(s[i])
 	}
@@ -610,7 +619,12 @@ func (f *printer) prevType() lexer.TokenType {
 // aside, ends an operand. A '+' or '-' behind one is a binary operator; behind
 // anything else (an operator, '(', ',', ':=', a keyword) it is a sign.
 func (f *printer) afterOperand() bool {
-	for i := f.pos - 1; i >= 0; i-- {
+	return f.afterOperandAt(f.pos)
+}
+
+// afterOperandAt is afterOperand for the token at index at.
+func (f *printer) afterOperandAt(at int) bool {
+	for i := at - 1; i >= 0; i-- {
 		switch f.tokens[i].Type {
 		case lexer.TokenLineComment, lexer.TokenBlockComment, lexer.TokenPragma:
 			continue
@@ -1076,15 +1090,15 @@ func (f *printer) emitToken() {
 // blankLineBeforeTop inserts a blank line before a top-level declaration
 // (POU, global VAR block, TYPE block) that follows other content.
 func (f *printer) blankLineBeforeTop() {
-	if f.buf.Len() == 0 || slices.ContainsFunc(f.blocks, func(b blockKind) bool { return b != bNamespace }) {
+	if len(f.buf) == 0 || slices.ContainsFunc(f.blocks, func(b blockKind) bool { return b != bNamespace }) {
 		return
 	}
 	f.flush()
 	if f.lastCh != '\n' {
-		f.writeCh('\n')
+		f.newline()
 	}
 	if f.lastCh != '\n' || f.prevCh != '\n' {
-		f.writeCh('\n')
+		f.newline()
 	}
 	for range f.depth {
 		f.writeCh('\t')
@@ -1248,32 +1262,64 @@ func (f *printer) emitOpener(kind blockKind) {
 	// A contextual opener is an identifier, so it keeps its spelling.
 	f.attach(tokenSpelling(tok))
 	f.advance()
-	f.restOfHeader()
+	f.restOfHeader(kind)
 	f.push(kind)
 	f.requestNL()
 }
 
-// restOfHeader writes the tokens that follow a block opener on its source
-// line: the name and ON target of a RESOURCE, the name of a STEP with its ':',
-// or the FROM ... TO ... := condition; of a TRANSITION.
-func (f *printer) restOfHeader() {
-	for {
-		tok := f.peek()
-		if !headerToken(tok.Type) || strings.Contains(f.source[f.tokens[f.pos-1].Offset:tok.Offset], "\n") {
-			return
-		}
-		if tok.Type == lexer.TokenColon {
-			// STEP s1: — the colon belongs to the step name and ends the
-			// header; the step's actions follow in its body.
-			f.attach(":")
-			f.advance()
-			return
-		}
-		f.emitToken()
-		if tok.Type == lexer.TokenSemicolon {
-			return
+// restOfHeader writes the header that follows a block opener: the name of a
+// NAMESPACE, CONFIGURATION or STEP (with its ':'), the name and ON target of a
+// RESOURCE, or the FROM ... TO ... := condition; of a TRANSITION. An accessor
+// (GET, SET) has none. The header is told by its tokens, never by where the
+// source breaks its lines: a long header line may be broken by the layout, and
+// formatting the result again must find the same header.
+func (f *printer) restOfHeader(kind blockKind) {
+	switch kind {
+	case bPOU:
+		return
+	case bTransition:
+		for {
+			tok := f.peek()
+			if !headerToken(tok.Type) || f.opensBlock() {
+				return
+			}
+			f.emitToken()
+			if tok.Type == lexer.TokenSemicolon {
+				return
+			}
 		}
 	}
+	if f.peek().Type != lexer.TokenIdent || f.opensBlock() {
+		return
+	}
+	f.space()
+	f.attachName()
+	switch kind {
+	case bStep:
+		// STEP s1: — the colon belongs to the step name; the step's actions
+		// follow in its body.
+		if f.peek().Type == lexer.TokenColon {
+			f.attach(":")
+			f.advance()
+		}
+	case bResource:
+		// RESOURCE r ON target
+		if t := f.peek(); t.Type == lexer.TokenIdent && strings.EqualFold(t.Literal, "ON") &&
+			f.pos+1 < len(f.tokens) && f.tokens[f.pos+1].Type == lexer.TokenIdent {
+			f.space()
+			f.attach(t.Literal)
+			f.advance()
+			f.space()
+			f.attachName()
+		}
+	}
+}
+
+// opensBlock reports whether the token at the current position opens a block
+// of its own, so that it is not part of the header before it.
+func (f *printer) opensBlock() bool {
+	_, ok := f.openers[f.pos]
+	return ok
 }
 
 // headerToken reports whether a token can be part of a block opener's header
@@ -1341,7 +1387,7 @@ func findOpeners(toks []lexer.Token) map[int]blockKind {
 	for i, tok := range toks {
 		if tok.Type == lexer.TokenIdent {
 			o, ok := lookupOpener(tok.Literal)
-			if ok && startsStatement(toks, i, o.kind == bPOU) && !usedAsValue(toks, i, o.kind == bTransition) {
+			if ok && startsStatement(toks, i) && !usedAsValue(toks, i, o.kind == bTransition) {
 				if pending == nil {
 					pending = make(map[lexer.TokenType][]int)
 				}
@@ -1366,10 +1412,10 @@ func findOpeners(toks []lexer.Token) map[int]blockKind {
 
 // startsStatement reports whether the identifier at index i comes where a
 // statement or declaration starts: at the start of the input or after a ';',
-// THEN, DO, ELSE, REPEAT or END_ keyword. An accessor (GET, SET) may also
-// follow a PROPERTY header directly. It looks only at tokens, never at line
-// breaks, so formatting cannot change its answer.
-func startsStatement(toks []lexer.Token, i int, accessor bool) bool {
+// THEN, DO, ELSE, REPEAT or END_ keyword, or right after a POU or member
+// header (PROGRAM Chart, then STEP; PROPERTY P : INT, then GET). It looks only
+// at tokens, never at line breaks, so formatting cannot change its answer.
+func startsStatement(toks []lexer.Token, i int) bool {
 	j := i - 1
 	for j >= 0 && lexer.IsComment(toks[j].Type) {
 		j--
@@ -1385,16 +1431,16 @@ func startsStatement(toks []lexer.Token, i int, accessor bool) bool {
 			return true
 		}
 	}
-	if !accessor {
-		return false
-	}
-	// PROPERTY [modifiers] name : type, where the type may be a dotted name,
-	// POINTER TO / REFERENCE TO a type, or ARRAY[...] OF a type.
+	// A header: the keyword, modifiers, a name, a return type (a dotted name,
+	// POINTER TO / REFERENCE TO a type, or ARRAY[...] OF a type) and
+	// EXTENDS / IMPLEMENTS lists.
 	for ; j >= 0; j-- {
 		switch toks[j].Type {
-		case lexer.TokenProperty:
+		case lexer.TokenProgram, lexer.TokenFunction, lexer.TokenFunctionBlock, lexer.TokenClass,
+			lexer.TokenInterface, lexer.TokenMethod, lexer.TokenProperty, lexer.TokenAction:
 			return true
-		case lexer.TokenIdent, lexer.TokenColon, lexer.TokenDot, lexer.TokenComma,
+		case lexer.TokenExtends, lexer.TokenImplements,
+			lexer.TokenIdent, lexer.TokenColon, lexer.TokenDot, lexer.TokenComma,
 			lexer.TokenNumber, lexer.TokenDotDot, lexer.TokenLParen, lexer.TokenRParen,
 			lexer.TokenLBracket, lexer.TokenRBracket, lexer.TokenPointer, lexer.TokenReference,
 			lexer.TokenRefTo, lexer.TokenTo, lexer.TokenArray, lexer.TokenOf,
