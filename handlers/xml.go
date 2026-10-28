@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -66,9 +67,10 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 					if !strings.Contains(raw, "\n") {
 						ending = formatter.LineEnding(string(contents))
 					}
-					formatted := formatter.FormatWith(inner, ending)
-					if err := formatter.Verify(inner, formatted); err != nil {
-						return nil, err
+					formatted, err := formatter.FormatWith(inner, ending)
+					if err != nil {
+						start := int(tokStart) + len("<![CDATA[") + strings.Index(raw, inner)
+						return nil, inFile(err, contents, start)
 					}
 					// Declaration/implementation content starts and ends
 					// with a line break so git diffs are per-line readable.
@@ -87,6 +89,18 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 	}
 
 	return applyEdits(contents, edits), nil
+}
+
+// inFile turns the line of a syntax error in an ST block, counted within the
+// block, into the line of the file, given the offset at which the block's text
+// starts. Other errors are returned as they are.
+func inFile(err error, contents []byte, start int) error {
+	var se *formatter.SyntaxError
+	if !errors.As(err, &se) {
+		return err
+	}
+	line := bytes.Count(contents[:start], []byte("\n")) + se.Line
+	return &formatter.SyntaxError{Line: line, Msg: se.Msg}
 }
 
 // isSTBlock reports whether the top of the element stack is a standard

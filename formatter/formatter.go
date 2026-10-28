@@ -1,6 +1,8 @@
 package formatter
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -21,7 +23,40 @@ const (
 	bRepeat
 	bCase
 	bCaseLabel
+	bNamespace
+	bConfig
+	bResource
+	bStep
+	bTransition
 )
+
+// blockNames names the blocks in error messages, by the keyword that opens
+// them.
+var blockNames = [...]string{
+	bPOU:        "POU",
+	bVar:        "VAR",
+	bType:       "TYPE",
+	bStruct:     "STRUCT",
+	bIf:         "IF",
+	bFor:        "FOR",
+	bWhile:      "WHILE",
+	bRepeat:     "REPEAT",
+	bCase:       "CASE",
+	bCaseLabel:  "CASE label",
+	bNamespace:  "NAMESPACE",
+	bConfig:     "CONFIGURATION",
+	bResource:   "RESOURCE",
+	bStep:       "STEP",
+	bTransition: "TRANSITION",
+}
+
+func (b blockKind) String() string { return blockNames[b] }
+
+// indents reports whether the body of a block is indented. A POU's statements
+// sit at its keyword's column, and a namespace holds POUs at the top level.
+func (b blockKind) indents() bool {
+	return b != bPOU && b != bNamespace
+}
 
 // printer formats a token stream into properly formatted ST source code.
 // It uses an explicit block stack to compute indentation and a
@@ -43,9 +78,22 @@ type printer struct {
 	runPos    int
 	pos       int
 	blocks    []blockKind
-	// depth is the indentation level: the number of open blocks that are not
-	// POU-like. It is maintained by push/pop instead of being recounted from
-	// the stack on every line break.
+	// blockAt holds, for each open block, the source offset of the token
+	// that opened it, so an error can name the line of an unclosed block.
+	blockAt []int
+	// brackets holds the open '(' and '[' with their source offsets.
+	brackets []openBracket
+	// openers maps the index of an identifier that opens a block (NAMESPACE,
+	// STEP, GET, ...) to that block; see findOpeners.
+	openers map[int]blockKind
+	// checked is set when the structure is checked: not for a file with
+	// ignored regions, whose tokens are partly skipped. err holds the first
+	// problem found.
+	checked bool
+	err     error
+	// depth is the indentation level: the number of open blocks that indent
+	// their body. It is maintained by push/pop instead of being recounted
+	// from the stack on every line break.
 	depth     int
 	buf       strings.Builder
 	lastCh    byte
@@ -91,6 +139,8 @@ func newPrinter(source, ending string) *printer {
 	f.buf.Grow(len(text))
 	if all, runs := scanDirectives(f.tokens); !all {
 		f.runs = runs
+		f.checked = len(runs) == 0
+		f.openers = findOpeners(f.tokens)
 	} else {
 		// A file-level "stformat:ignore" leaves the file byte-for-byte alone.
 		f.ignoreAll = true
@@ -99,19 +149,72 @@ func newPrinter(source, ending string) *printer {
 }
 
 // Format formats the source, keeping the line ending it already uses.
-func Format(source string) string {
-	return newPrinter(source, LineEnding(source)).run()
+//
+// It returns an error, and no output, when the source is not well formed (a
+// block or bracket that is opened and never closed, or closed and never
+// opened; reported as a *SyntaxError) or when the output would not hold the
+// same tokens as the source, which Verify describes. A file with ignored
+// regions is not checked for structure, since part of it is never read.
+func Format(source string) (string, error) {
+	return format(source, LineEnding(source))
 }
 
-// FormatWith formats the source and writes every line break as ending. Use it
-// when the line ending must follow something other than the text being
-// formatted, such as the rest of an XML file whose CDATA section holds the code.
-// An ending other than "\r\n" or "\n" falls back to the one found in source.
-func FormatWith(source, ending string) string {
+// FormatWith is Format writing every line break as ending. Use it when the
+// line ending must follow something other than the text being formatted, such
+// as the rest of an XML file whose CDATA section holds the code. An ending
+// other than "\r\n" or "\n" falls back to the one found in source.
+func FormatWith(source, ending string) (string, error) {
 	if ending != "\r\n" && ending != "\n" {
 		ending = LineEnding(source)
 	}
-	return newPrinter(source, ending).run()
+	return format(source, ending)
+}
+
+func format(source, ending string) (string, error) {
+	f := newPrinter(source, ending)
+	out := f.run()
+	if f.ignoreAll {
+		return out, nil
+	}
+	if f.err != nil {
+		return "", f.err
+	}
+	// The source tokens are at hand, so only the output is lexed again.
+	text := toLF(out)
+	if f.bom {
+		text = strings.TrimPrefix(text, utf8BOM)
+	}
+	if err := compareTokens(f.tokens, lexer.Lex(text)); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// SyntaxError reports source that is not well formed enough to format.
+type SyntaxError struct {
+	Line int // line of the offending token, counted from 1
+	Msg  string
+}
+
+func (e *SyntaxError) Error() string {
+	return fmt.Sprintf("line %d: %s", e.Line, e.Msg)
+}
+
+// fail records a structural problem at a source offset. Only the first one is
+// kept, and nothing is recorded when the structure is not checked.
+func (f *printer) fail(offset int, format string, args ...any) {
+	if !f.checked || f.err != nil {
+		return
+	}
+	f.err = &SyntaxError{
+		Line: f.line(offset),
+		Msg:  fmt.Sprintf(format, args...),
+	}
+}
+
+// line returns the source line, counted from 1, of an offset.
+func (f *printer) line(offset int) int {
+	return 1 + strings.Count(f.source[:offset], "\n")
 }
 
 // run executes the formatting pass and returns the output string, using the
@@ -130,6 +233,7 @@ func (f *printer) run() string {
 		}
 		f.emitToken()
 	}
+	f.checkClosed()
 	// A break still pending at the end would only write indentation. The file
 	// ends with a single line break, unless the input ends inside a token
 	// that never closes: a break written now would become part of its text.
@@ -418,12 +522,13 @@ func (f *printer) startOwnLine() {
 	}
 }
 
-// push opens a block. POU-like blocks (FUNCTION/FUNCTION_BLOCK/PROGRAM/
-// METHOD/...) do not indent their bodies: their statements sit at the POU
-// keyword's column, so they do not raise the depth.
+// push opens a block. A block that does not indent its body (a POU, a
+// namespace) does not raise the depth. The block is taken to be opened by the
+// token just consumed, which is where an error about it points.
 func (f *printer) push(b blockKind) {
 	f.blocks = append(f.blocks, b)
-	if b != bPOU {
+	f.blockAt = append(f.blockAt, f.tokens[max(f.pos-1, 0)].Offset)
+	if b.indents() {
 		f.depth++
 	}
 }
@@ -434,10 +539,57 @@ func (f *printer) pop() blockKind {
 	}
 	b := f.blocks[len(f.blocks)-1]
 	f.blocks = f.blocks[:len(f.blocks)-1]
-	if b != bPOU {
+	f.blockAt = f.blockAt[:len(f.blockAt)-1]
+	if b.indents() {
 		f.depth--
 	}
 	return b
+}
+
+// openBracket is a '(' or '[' waiting for its closing bracket.
+type openBracket struct {
+	ch     byte
+	offset int
+}
+
+// openBracketAt records a '(' or '[' at the current token.
+func (f *printer) openBracketAt(ch byte) {
+	f.brackets = append(f.brackets, openBracket{ch, f.peek().Offset})
+}
+
+// closeBracketAt matches a ')' or ']' at the current token against the
+// innermost open bracket.
+func (f *printer) closeBracketAt(ch byte) {
+	want := byte('(')
+	if ch == ']' {
+		want = '['
+	}
+	n := len(f.brackets)
+	switch {
+	case n == 0:
+		f.fail(f.peek().Offset, "%c without a matching %c", ch, want)
+	case f.brackets[n-1].ch != want:
+		f.fail(f.peek().Offset, "%c closes the %c from line %d", ch, f.brackets[n-1].ch, f.line(f.brackets[n-1].offset))
+		f.brackets = f.brackets[:n-1]
+	default:
+		f.brackets = f.brackets[:n-1]
+	}
+}
+
+// checkClosed reports a block or bracket still open at the end of the input.
+// A POU may stay open: TwinCAT stores a POU's declaration without its END_
+// keyword, and a namespace may hold such POUs.
+func (f *printer) checkClosed() {
+	for i, b := range f.blocks {
+		if b != bPOU && b != bNamespace && b != bCaseLabel {
+			f.fail(f.blockAt[i], "%s is never closed", b)
+			return
+		}
+	}
+	if len(f.brackets) > 0 {
+		b := f.brackets[0]
+		f.fail(b.offset, "%c is never closed", b.ch)
+	}
 }
 
 func (f *printer) top() blockKind {
@@ -504,18 +656,30 @@ func (f *printer) emitToken() {
 		return
 	}
 
+	if kind, ok := f.openers[f.pos]; ok {
+		f.emitOpener(kind)
+		return
+	}
+
 	lit := tokenSpelling(tok)
 
 	switch tok.Type {
 	// ------- POU declarations -------
 	case lexer.TokenProgram, lexer.TokenFunction, lexer.TokenFunctionBlock,
 		lexer.TokenClass, lexer.TokenInterface:
+		if tok.Type == lexer.TokenProgram && (f.top() == bConfig || f.top() == bResource) {
+			// A program instance in a configuration (PROGRAM inst WITH task :
+			// Prog;) is a declaration, not a POU.
+			f.startOwnLine()
+			f.attach(lit)
+			f.advance()
+			return
+		}
 		f.blankLineBeforeTop()
 		f.startOwnLine()
 		f.attach(lit)
-		f.space()
 		f.advance()
-		f.parsePOUHeader(tok.Type)
+		f.parseHeader()
 		f.push(bPOU)
 		f.requestNL()
 
@@ -525,19 +689,30 @@ func (f *printer) emitToken() {
 	case lexer.TokenMethod, lexer.TokenProperty, lexer.TokenAction:
 		f.startOwnLine()
 		f.attach(lit)
-		f.space()
 		f.advance()
-		f.parseMemberHeader(tok.Type)
+		f.parseHeader()
 		f.push(bPOU)
 		f.requestNL()
 
 	case lexer.TokenEndProgram, lexer.TokenEndFunction, lexer.TokenEndFunctionBlock,
 		lexer.TokenEndAction, lexer.TokenEndMethod, lexer.TokenEndProperty,
-		lexer.TokenEndClass, lexer.TokenEndInterface:
+		lexer.TokenEndClass, lexer.TokenEndInterface, lexer.TokenEndGet, lexer.TokenEndSet:
 		f.popUntil(bPOU)
 		f.startOwnLine()
 		f.attach(lit)
 		f.advance()
+
+	// ------- Namespaces, configurations and SFC -------
+	case lexer.TokenInitialStep:
+		f.emitOpener(bStep)
+
+	case lexer.TokenEndNamespace, lexer.TokenEndConfiguration, lexer.TokenEndResource,
+		lexer.TokenEndStep, lexer.TokenEndTransition:
+		f.popUntil(closedBy[tok.Type])
+		f.startOwnLine()
+		f.attach(lit)
+		f.advance()
+		f.endBreak()
 
 	// ------- TYPE blocks -------
 	case lexer.TokenTypeKw:
@@ -560,7 +735,7 @@ func (f *printer) emitToken() {
 	case lexer.TokenVar, lexer.TokenVarInput, lexer.TokenVarOutput,
 		lexer.TokenVarInOut, lexer.TokenVarTemp, lexer.TokenVarGlobal,
 		lexer.TokenVarExternal, lexer.TokenVarConfig, lexer.TokenVarStat,
-		lexer.TokenVarInst, lexer.TokenVarAccess:
+		lexer.TokenVarInst, lexer.TokenVarAccess, lexer.TokenVarGeneric:
 		f.startOwnLine()
 		f.attach(lit)
 		f.advance()
@@ -669,8 +844,11 @@ func (f *printer) emitToken() {
 		f.advance()
 
 	case lexer.TokenElse:
-		if f.top() == bCaseLabel {
-			f.pop()
+		if f.top() == bCaseLabel || f.top() == bCase {
+			// The ELSE branch of a CASE, after its labels or in place of them.
+			if f.top() == bCaseLabel {
+				f.pop()
+			}
 			f.startOwnLine()
 			f.attach(lit)
 			f.advance()
@@ -834,18 +1012,22 @@ func (f *printer) emitToken() {
 		f.advance()
 
 	case lexer.TokenLParen:
+		f.openBracketAt('(')
 		f.handleLParen()
 		f.advance()
 
 	case lexer.TokenRParen:
+		f.closeBracketAt(')')
 		f.attach(")")
 		f.advance()
 
 	case lexer.TokenLBracket:
+		f.openBracketAt('[')
 		f.attach("[")
 		f.advance()
 
 	case lexer.TokenRBracket:
+		f.closeBracketAt(']')
 		f.attach("]")
 		f.advance()
 
@@ -894,7 +1076,7 @@ func (f *printer) emitToken() {
 // blankLineBeforeTop inserts a blank line before a top-level declaration
 // (POU, global VAR block, TYPE block) that follows other content.
 func (f *printer) blankLineBeforeTop() {
-	if len(f.blocks) > 0 || f.buf.Len() == 0 {
+	if f.buf.Len() == 0 || slices.ContainsFunc(f.blocks, func(b blockKind) bool { return b != bNamespace }) {
 		return
 	}
 	f.flush()
@@ -910,63 +1092,131 @@ func (f *printer) blankLineBeforeTop() {
 	f.lineStart = true
 }
 
-// parsePOUHeader consumes the POU name and optional return type /
-// EXTENDS / IMPLEMENTS clauses, emitting the ':' before a FUNCTION return
-// type. The caller has already emitted the keyword and any block keyword
-// that precedes it.
-func (f *printer) parsePOUHeader(kind lexer.TokenType) {
-	name := f.peek()
-	if name.Type == lexer.TokenIdent {
-		f.attach(name.Literal)
-		f.advance()
-	}
-
-	if kind == lexer.TokenFunction {
-		if f.peek().Type == lexer.TokenColon {
+// parseHeader writes what follows a POU or member keyword (FUNCTION_BLOCK,
+// METHOD, ...): access and inheritance modifiers, the name, a return type after
+// ':' and EXTENDS / IMPLEMENTS lists, in whatever order the source has them. It
+// stops at the first token that is none of these (a second name included), so
+// the first VAR block or statement starts on a line of its own.
+func (f *printer) parseHeader() {
+	named := false
+	for {
+		tok := f.peek()
+		switch tok.Type {
+		case lexer.TokenPublic, lexer.TokenPrivate, lexer.TokenProtected, lexer.TokenInternal,
+			lexer.TokenAbstract, lexer.TokenFinal:
+			f.space()
+			f.attach(tokenSpelling(tok))
 			f.advance()
+		case lexer.TokenIdent:
+			if named {
+				return
+			}
+			named = true
+			f.space()
+			f.attachName()
+		case lexer.TokenColon:
 			f.space()
 			f.attach(":")
-			f.space()
-			rt := f.peek()
-			if rt.Type != lexer.TokenEOF {
-				f.attach(keywordSpelling(rt))
-				f.advance()
-			}
-		}
-	}
-
-	for {
-		switch f.peek().Type {
-		case lexer.TokenExtends:
 			f.advance()
+			f.parseType()
+		case lexer.TokenExtends, lexer.TokenImplements:
 			f.space()
-			f.attach("EXTENDS")
-			f.space()
-			if n := f.peek(); n.Type == lexer.TokenIdent {
-				f.attach(n.Literal)
-				f.advance()
-			}
-		case lexer.TokenImplements:
+			f.attach(tokenSpelling(tok))
 			f.advance()
-			f.space()
-			f.attach("IMPLEMENTS")
-			for {
-				f.space()
-				if n := f.peek(); n.Type == lexer.TokenIdent {
-					f.attach(n.Literal)
-					f.advance()
-				}
-				if f.peek().Type == lexer.TokenComma {
-					f.attach(",")
-					f.space()
-					f.advance()
-					continue
-				}
-				break
-			}
+			f.parseNameList()
 		default:
 			return
 		}
+	}
+}
+
+// parseType writes a type: a name (INT, Ns.ST_Data, STRING(80), STRING[80]),
+// POINTER TO, REFERENCE TO or REF_TO a type, or ARRAY[...] OF a type.
+func (f *printer) parseType() {
+	tok := f.peek()
+	switch {
+	case tok.Type == lexer.TokenPointer || tok.Type == lexer.TokenReference:
+		f.space()
+		f.attach(tokenSpelling(tok))
+		f.advance()
+		if f.peek().Type == lexer.TokenTo {
+			f.space()
+			f.attach("TO")
+			f.advance()
+		}
+		f.parseType()
+	case tok.Type == lexer.TokenRefTo:
+		f.space()
+		f.attach(tokenSpelling(tok))
+		f.advance()
+		f.parseType()
+	case tok.Type == lexer.TokenArray:
+		f.space()
+		f.attach(tokenSpelling(tok))
+		f.advance()
+		if f.peek().Type == lexer.TokenLBracket {
+			f.parseGroup()
+		}
+		if f.peek().Type == lexer.TokenOf {
+			f.space()
+			f.attach("OF")
+			f.advance()
+			f.parseType()
+		}
+	case tok.Type == lexer.TokenIdent || lexer.IsScalarTypeToken(tok.Type):
+		f.space()
+		f.attachName()
+		if t := f.peek().Type; t == lexer.TokenLParen || t == lexer.TokenLBracket {
+			f.parseGroup()
+		}
+	}
+}
+
+// attachName writes the name at the current position, with the members of a
+// dotted name (Ns.ST_Data) behind it, and moves past it. A type keyword keeps
+// the spelling keywordSpelling gives it.
+func (f *printer) attachName() {
+	f.attach(keywordSpelling(f.peek()))
+	f.advance()
+	for f.peek().Type == lexer.TokenDot && f.pos+1 < len(f.tokens) && f.tokens[f.pos+1].Type == lexer.TokenIdent {
+		f.attach(".")
+		f.advance()
+		f.attach(f.peek().Literal)
+		f.advance()
+	}
+}
+
+// parseGroup writes a bracketed group ([1..10, 0..1] or (80)) token by token
+// up to and including its closing bracket.
+func (f *printer) parseGroup() {
+	depth := 0
+	for {
+		tok := f.peek()
+		switch tok.Type {
+		case lexer.TokenEOF:
+			return
+		case lexer.TokenLParen, lexer.TokenLBracket:
+			depth++
+		case lexer.TokenRParen, lexer.TokenRBracket:
+			depth--
+		}
+		f.emitToken()
+		if depth == 0 {
+			return
+		}
+	}
+}
+
+// parseNameList writes the comma separated names after EXTENDS or IMPLEMENTS.
+func (f *printer) parseNameList() {
+	for f.peek().Type == lexer.TokenIdent {
+		f.space()
+		f.attachName()
+		if f.peek().Type != lexer.TokenComma {
+			return
+		}
+		f.attach(",")
+		f.advance()
 	}
 }
 
@@ -986,51 +1236,220 @@ func (f *printer) parseTypeHeader() {
 	}
 }
 
-// parseMemberHeader consumes access modifiers, name and optional
-// `: return_type` after a METHOD / PROPERTY / ACTION keyword.
-func (f *printer) parseMemberHeader(kind lexer.TokenType) {
-	// Access modifiers come after the keyword: METHOD PRIVATE Foo
-modifiers:
+// emitOpener writes a block opener that the keyword switch does not handle
+// (INITIAL_STEP, or a contextual opener such as NAMESPACE, STEP or GET) with
+// the rest of its header line, and opens its block.
+func (f *printer) emitOpener(kind blockKind) {
+	tok := f.peek()
+	if kind == bNamespace || kind == bConfig {
+		f.blankLineBeforeTop()
+	}
+	f.startOwnLine()
+	// A contextual opener is an identifier, so it keeps its spelling.
+	f.attach(tokenSpelling(tok))
+	f.advance()
+	f.restOfHeader()
+	f.push(kind)
+	f.requestNL()
+}
+
+// restOfHeader writes the tokens that follow a block opener on its source
+// line: the name and ON target of a RESOURCE, the name of a STEP with its ':',
+// or the FROM ... TO ... := condition; of a TRANSITION.
+func (f *printer) restOfHeader() {
 	for {
-		q := f.peek()
-		switch q.Type {
-		case lexer.TokenPublic, lexer.TokenPrivate, lexer.TokenProtected, lexer.TokenInternal:
-			f.attach(q.Literal)
-			f.advance()
-			f.space()
-		case lexer.TokenAbstract, lexer.TokenFinal:
-			f.attach(q.Literal)
-			f.advance()
-			f.space()
-		default:
-			break modifiers
+		tok := f.peek()
+		if !headerToken(tok.Type) || strings.Contains(f.source[f.tokens[f.pos-1].Offset:tok.Offset], "\n") {
+			return
 		}
-	}
-	if n := f.peek(); n.Type == lexer.TokenIdent {
-		f.attach(n.Literal)
-		f.advance()
-	}
-	// METHOD / PROPERTY may have an explicit return type: NAME : TYPE
-	colon := f.peek()
-	if colon.Type == lexer.TokenColon && (kind == lexer.TokenMethod || kind == lexer.TokenProperty) {
-		f.advance()
-		f.space()
-		f.attach(":")
-		f.space()
-		if rt := f.peek(); rt.Type != lexer.TokenEOF {
-			f.attach(keywordSpelling(rt))
+		if tok.Type == lexer.TokenColon {
+			// STEP s1: — the colon belongs to the step name and ends the
+			// header; the step's actions follow in its body.
+			f.attach(":")
 			f.advance()
+			return
+		}
+		f.emitToken()
+		if tok.Type == lexer.TokenSemicolon {
+			return
 		}
 	}
 }
 
-func (f *printer) popUntil(kind blockKind) {
-	for len(f.blocks) > 0 {
-		b := f.pop()
-		if b == kind {
-			break
+// headerToken reports whether a token can be part of a block opener's header
+// line: anything but a comment, the end of input, or a keyword that has a
+// layout of its own (a block opener or closer, VAR, ...). Operators spelled as
+// keywords, TO and type names are fine.
+func headerToken(tt lexer.TokenType) bool {
+	switch tt {
+	case lexer.TokenEOF, lexer.TokenLineComment, lexer.TokenBlockComment, lexer.TokenPragma:
+		return false
+	case lexer.TokenTo, lexer.TokenTrue, lexer.TokenFalse, lexer.TokenAnd, lexer.TokenOr,
+		lexer.TokenXor, lexer.TokenNot, lexer.TokenMod, lexer.TokenAndThen, lexer.TokenOrElse:
+		return true
+	}
+	return lexer.KeywordSpelling(tt) == "" || lexer.IsScalarTypeToken(tt)
+}
+
+// contextualOpener is a block opener that the lexer leaves an identifier,
+// because the word is common as a name in PLC code (a Step counter, a Set
+// method). It only opens a block where findOpeners finds it closed.
+type contextualOpener struct {
+	word string          // uppercase spelling
+	end  lexer.TokenType // the keyword that closes the block
+	kind blockKind
+}
+
+var contextualOpeners = []contextualOpener{
+	{"NAMESPACE", lexer.TokenEndNamespace, bNamespace},
+	{"CONFIGURATION", lexer.TokenEndConfiguration, bConfig},
+	{"RESOURCE", lexer.TokenEndResource, bResource},
+	{"STEP", lexer.TokenEndStep, bStep},
+	{"TRANSITION", lexer.TokenEndTransition, bTransition},
+	{"GET", lexer.TokenEndGet, bPOU},
+	{"SET", lexer.TokenEndSet, bPOU},
+}
+
+// closedBy maps a closing keyword to the block it closes, for the blocks that
+// the keyword switch closes through it.
+var closedBy = map[lexer.TokenType]blockKind{
+	lexer.TokenEndNamespace:     bNamespace,
+	lexer.TokenEndConfiguration: bConfig,
+	lexer.TokenEndResource:      bResource,
+	lexer.TokenEndStep:          bStep,
+	lexer.TokenEndTransition:    bTransition,
+}
+
+// lookupOpener returns the contextual opener an identifier is spelled like.
+func lookupOpener(lit string) (contextualOpener, bool) {
+	for _, o := range contextualOpeners {
+		if len(lit) == len(o.word) && strings.EqualFold(lit, o.word) {
+			return o, true
 		}
 	}
+	return contextualOpener{}, false
+}
+
+// findOpeners returns the identifiers that open a block, by token index. Such
+// an identifier is spelled like a contextual opener, starts a statement, is
+// not used as a value (assigned, called, indexed, dereferenced or followed
+// by ';') and is closed by its keyword further on. Openers of one kind nest, so
+// each closing keyword pairs with the nearest open candidate before it.
+func findOpeners(toks []lexer.Token) map[int]blockKind {
+	var openers map[int]blockKind
+	var pending map[lexer.TokenType][]int
+	for i, tok := range toks {
+		if tok.Type == lexer.TokenIdent {
+			o, ok := lookupOpener(tok.Literal)
+			if ok && startsStatement(toks, i, o.kind == bPOU) && !usedAsValue(toks, i, o.kind == bTransition) {
+				if pending == nil {
+					pending = make(map[lexer.TokenType][]int)
+				}
+				pending[o.end] = append(pending[o.end], i)
+			}
+			continue
+		}
+		stack := pending[tok.Type]
+		if len(stack) == 0 {
+			continue
+		}
+		at := stack[len(stack)-1]
+		pending[tok.Type] = stack[:len(stack)-1]
+		if openers == nil {
+			openers = make(map[int]blockKind)
+		}
+		o, _ := lookupOpener(toks[at].Literal)
+		openers[at] = o.kind
+	}
+	return openers
+}
+
+// startsStatement reports whether the identifier at index i comes where a
+// statement or declaration starts: at the start of the input or after a ';',
+// THEN, DO, ELSE, REPEAT or END_ keyword. An accessor (GET, SET) may also
+// follow a PROPERTY header directly. It looks only at tokens, never at line
+// breaks, so formatting cannot change its answer.
+func startsStatement(toks []lexer.Token, i int, accessor bool) bool {
+	j := i - 1
+	for j >= 0 && lexer.IsComment(toks[j].Type) {
+		j--
+	}
+	if j < 0 {
+		return true
+	}
+	switch tt := toks[j].Type; tt {
+	case lexer.TokenSemicolon, lexer.TokenThen, lexer.TokenDo, lexer.TokenElse, lexer.TokenRepeat:
+		return true
+	default:
+		if lexer.IsBlockEnd(tt) {
+			return true
+		}
+	}
+	if !accessor {
+		return false
+	}
+	// PROPERTY [modifiers] name : type, where the type may be a dotted name,
+	// POINTER TO / REFERENCE TO a type, or ARRAY[...] OF a type.
+	for ; j >= 0; j-- {
+		switch toks[j].Type {
+		case lexer.TokenProperty:
+			return true
+		case lexer.TokenIdent, lexer.TokenColon, lexer.TokenDot, lexer.TokenComma,
+			lexer.TokenNumber, lexer.TokenDotDot, lexer.TokenLParen, lexer.TokenRParen,
+			lexer.TokenLBracket, lexer.TokenRBracket, lexer.TokenPointer, lexer.TokenReference,
+			lexer.TokenRefTo, lexer.TokenTo, lexer.TokenArray, lexer.TokenOf,
+			lexer.TokenPublic, lexer.TokenPrivate, lexer.TokenProtected, lexer.TokenInternal,
+			lexer.TokenAbstract, lexer.TokenFinal,
+			lexer.TokenLineComment, lexer.TokenBlockComment, lexer.TokenPragma:
+		default:
+			if !lexer.IsScalarTypeToken(toks[j].Type) {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+// usedAsValue reports whether the identifier at index i is used as a variable
+// or called, judging by the token after it. A TRANSITION may be followed by
+// its (PRIORITY := n).
+func usedAsValue(toks []lexer.Token, i int, parenOK bool) bool {
+	for _, t := range toks[i+1:] {
+		switch t.Type {
+		case lexer.TokenLineComment, lexer.TokenBlockComment, lexer.TokenPragma:
+			continue
+		case lexer.TokenLParen:
+			return !parenOK
+		case lexer.TokenAssign, lexer.TokenSAssign, lexer.TokenRAssign, lexer.TokenRefAssign,
+			lexer.TokenOutputBind, lexer.TokenDot, lexer.TokenLBracket, lexer.TokenCaret,
+			lexer.TokenComma, lexer.TokenSemicolon, lexer.TokenColon, lexer.TokenRParen,
+			lexer.TokenEqual, lexer.TokenNotEqual, lexer.TokenLess, lexer.TokenLessEq,
+			lexer.TokenGreater, lexer.TokenGreaterEq, lexer.TokenPlus, lexer.TokenMinus,
+			lexer.TokenStar, lexer.TokenSlash, lexer.TokenAnd, lexer.TokenOr, lexer.TokenXor:
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// popUntil closes the innermost open block of the given kind, which the
+// current token ends, together with any block opened inside it. A block left
+// open inside it, or no such block at all, is a structural error; layout
+// carries on either way.
+func (f *printer) popUntil(kind blockKind) {
+	tok := f.peek()
+	for len(f.blocks) > 0 {
+		at := f.blockAt[len(f.blockAt)-1]
+		b := f.pop()
+		if b == kind {
+			return
+		}
+		if b != bCaseLabel {
+			f.fail(tok.Offset, "%s while the %s from line %d is still open", tokenSpelling(tok), b, f.line(at))
+		}
+	}
+	f.fail(tok.Offset, "%s without a matching %s", tokenSpelling(tok), kind)
 }
 
 // handleColon handles ':' in its semantic contexts.

@@ -2,6 +2,7 @@ package formatter
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -307,10 +308,12 @@ func TestFormatIDs(t *testing.T) {
 		},
 	}
 
+	// These cases are about layout, and a few are deliberately malformed, so
+	// they look at the layout without the structure check.
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			if got := Format(c.in); got != c.want {
+			if got := layout(c.in); got != c.want {
 				t.Errorf("Format() mismatch\n got: %q\nwant: %q", got, c.want)
 			}
 		})
@@ -320,8 +323,8 @@ func TestFormatIDs(t *testing.T) {
 func TestIdempotent(t *testing.T) {
 	t.Parallel()
 	in := "function_block fb\nvar\nx: bool:=true;\nend_var\nif x then\nx:=false;\nend_if\nend_function_block"
-	once := Format(in)
-	twice := Format(once)
+	once := mustFormat(t, in)
+	twice := mustFormat(t, once)
 	if once != twice {
 		t.Errorf("formatter not idempotent\nonce:  %q\ntwice: %q", once, twice)
 	}
@@ -420,8 +423,8 @@ func TestIdempotentRegression(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			once := Format(c.in)
-			twice := Format(once)
+			once := layout(c.in)
+			twice := layout(once)
 			if once != twice {
 				t.Errorf("second pass changed the output\nonce:  %q\ntwice: %q", once, twice)
 			}
@@ -456,7 +459,7 @@ func TestCopyStream(t *testing.T) {
 			if _, err := Copy(&buf, strings.NewReader(in)); err != nil {
 				t.Fatalf("Copy: %v", err)
 			}
-			if want := Format(in); buf.String() != want {
+			if want := mustFormat(t, in); buf.String() != want {
 				t.Errorf("Copy()\n got: %q\nwant: %q", buf.String(), want)
 			}
 			// The stream must also be stable under a second pass.
@@ -502,11 +505,11 @@ func TestCopyUnterminatedInput(t *testing.T) {
 // the output, and does not get in the way of a leading directive.
 func TestByteOrderMark(t *testing.T) {
 	t.Parallel()
-	if got, want := Format(utf8BOM+"x:=1;\n"), utf8BOM+"x := 1;\n"; got != want {
+	if got, want := mustFormat(t, utf8BOM+"x:=1;\n"), utf8BOM+"x := 1;\n"; got != want {
 		t.Errorf("Format with BOM = %q, want %q", got, want)
 	}
 	ignored := utf8BOM + "// stformat:ignore\nx:=1;\n"
-	if got := Format(ignored); got != ignored {
+	if got := mustFormat(t, ignored); got != ignored {
 		t.Errorf("Format ignored file with BOM = %q, want it unchanged", got)
 	}
 	var buf bytes.Buffer
@@ -546,11 +549,11 @@ func TestLineEndings(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			got := Format(c.in)
+			got := mustFormat(t, c.in)
 			if got != c.want {
 				t.Errorf("Format()\n got: %q\nwant: %q", got, c.want)
 			}
-			if again := Format(got); again != got {
+			if again := mustFormat(t, got); again != got {
 				t.Errorf("not idempotent\nonce: %q\ntwice: %q", got, again)
 			}
 		})
@@ -585,15 +588,15 @@ func TestLineEnding(t *testing.T) {
 func TestFormatWith(t *testing.T) {
 	t.Parallel()
 	source := "PROGRAM p\nx:=1;\ny:=2;\nEND_PROGRAM\n"
-	if got, want := FormatWith(source, "\r\n"), "PROGRAM p\r\nx := 1;\r\ny := 2;\r\nEND_PROGRAM\r\n"; got != want {
+	if got, want := mustFormatWith(t, source, "\r\n"), "PROGRAM p\r\nx := 1;\r\ny := 2;\r\nEND_PROGRAM\r\n"; got != want {
 		t.Errorf("FormatWith CRLF\n got: %q\nwant: %q", got, want)
 	}
-	if got, want := FormatWith(source, "\n"), Format(source); got != want {
+	if got, want := mustFormatWith(t, source, "\n"), mustFormat(t, source); got != want {
 		t.Errorf("FormatWith LF\n got: %q\nwant: %q", got, want)
 	}
 	// An unusable ending falls back to the one in the source.
 	crlf := strings.ReplaceAll(source, "\n", "\r\n")
-	if got, want := FormatWith(crlf, "\r"), Format(crlf); got != want {
+	if got, want := mustFormatWith(t, crlf, "\r"), mustFormat(t, crlf); got != want {
 		t.Errorf("FormatWith bad ending\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -694,11 +697,11 @@ func TestFormatFixes(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			got := Format(c.in)
+			got := mustFormat(t, c.in)
 			if got != c.want {
 				t.Errorf("Format()\n got: %q\nwant: %q", got, c.want)
 			}
-			if again := Format(got); again != got {
+			if again := mustFormat(t, got); again != got {
 				t.Errorf("not idempotent\n once: %q\ntwice: %q", got, again)
 			}
 		})
@@ -735,6 +738,89 @@ func TestVerify(t *testing.T) {
 	for _, c := range bad {
 		if err := Verify(c[0], c[1]); err == nil {
 			t.Errorf("Verify(%q, %q) = nil, want an error", c[0], c[1])
+		}
+	}
+}
+
+// mustFormat is Format for a source the test expects to format cleanly.
+func mustFormat(t *testing.T, src string) string {
+	t.Helper()
+	out, err := Format(src)
+	if err != nil {
+		t.Fatalf("Format(%q): %v", src, err)
+	}
+	return out
+}
+
+// mustFormatWith is FormatWith for a source the test expects to format
+// cleanly.
+func mustFormatWith(t *testing.T, src, ending string) string {
+	t.Helper()
+	out, err := FormatWith(src, ending)
+	if err != nil {
+		t.Fatalf("FormatWith(%q): %v", src, err)
+	}
+	return out
+}
+
+// TestSyntaxErrors checks that source with a block or bracket opened and never
+// closed, or closed and never opened, is refused with the line to look at.
+func TestSyntaxErrors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		line int
+		msg  string
+	}{
+		{"unclosed IF", "PROGRAM p\nIF a THEN\nx := 1;\nEND_PROGRAM\n", 4, "END_PROGRAM while the IF from line 2 is still open"},
+		{"IF at end of input", "IF a THEN\nx := 1;\n", 1, "IF is never closed"},
+		{"END_IF without IF", "x := 1;\nEND_IF\n", 2, "END_IF without a matching IF"},
+		{"ELSE without IF", "x := 1;\nELSE\n", 2, "ELSE without a matching IF"},
+		{"END_FOR closing a WHILE", "WHILE a DO\nx := 1;\nEND_FOR\n", 3, "END_FOR while the WHILE from line 1 is still open"},
+		{"unclosed VAR", "VAR\nx : INT;\n", 1, "VAR is never closed"},
+		{"stray paren", "x := (a + b));\n", 1, ") without a matching ("},
+		{"unclosed paren", "x := f(a,\nb;\n", 1, "( is never closed"},
+		{"mismatched bracket", "x := a[1);\n", 1, ") closes the [ from line 1"},
+		{"STEP without END_STEP is a name", "STEP s1:\nx := 1;\nEND_TRANSITION\n", 3, "END_TRANSITION without a matching TRANSITION"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := Format(c.in)
+			var se *SyntaxError
+			if !errors.As(err, &se) {
+				t.Fatalf("Format(%q) = %q, %v; want a *SyntaxError", c.in, out, err)
+			}
+			if out != "" {
+				t.Errorf("Format returned output %q along with the error", out)
+			}
+			if se.Line != c.line || se.Msg != c.msg {
+				t.Errorf("error = line %d: %q, want line %d: %q", se.Line, se.Msg, c.line, c.msg)
+			}
+		})
+	}
+}
+
+// TestWellFormedFragments checks inputs the structure check must accept: the
+// fragments TwinCAT stores in its XML files, and ignored regions.
+func TestWellFormedFragments(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		// A POU declaration without its END_ keyword, as in a TcPOU.
+		"FUNCTION_BLOCK FB\nVAR_INPUT\nx : INT;\nEND_VAR\n",
+		"METHOD M : BOOL\nVAR_INPUT\nx : INT;\nEND_VAR\n",
+		// An implementation section: statements only.
+		"IF a THEN\nx := 1;\nEND_IF\n",
+		// A CASE with nothing but an ELSE branch.
+		"CASE n OF\nELSE\nx := 1;\nEND_CASE\n",
+		// An ignored region may hide half of a block.
+		"IF a THEN\n// stformat:off\nEND_IF IF b THEN\n// stformat:on\nEND_IF\n",
+		// A file-level ignore is never checked.
+		"// stformat:ignore\nEND_IF\n",
+	} {
+		if _, err := Format(in); err != nil {
+			t.Errorf("Format(%q): %v", in, err)
 		}
 	}
 }

@@ -58,8 +58,7 @@ TYPE states :
 	a := 0, b := 1);
 END_TYPE
 
-FUNCTION_BLOCK child
-PUBLIC EXTENDS base
+FUNCTION_BLOCK child PUBLIC EXTENDS base
 // inherits from base
 VAR
 	w : INT;

@@ -19,15 +19,23 @@ END_PROGRAM
 PROGRAM durationThenMore
 IF t^.p > T#0MS THEN
 	p := t^.p;
-	IF r <> T#0S THEN
-		a := b := r;
-		IF timer.Q OR d = T#0MS THEN
-			c := s;
-			IF ts.e > T#0MS THEN
-				x := ts.a + ts.b + ts.c;
-				IF ts.e > T#0MS THEN
-					calc(IN := TRUE);
-				END_IF
+END_IF
+
+IF r <> T#0S THEN
+	a := b := r;
+END_IF
+
+IF timer.Q OR d = T#0MS THEN
+	c := s;
+END_IF
+
+IF ts.e > T#0MS THEN
+	x := ts.a + ts.b + ts.c;
+END_IF
+
+IF ts.e > T#0MS THEN
+	calc(IN := TRUE);
+END_IF
 END_PROGRAM
 // A duration with spaced components is one literal, so the blank inside it is kept.
 

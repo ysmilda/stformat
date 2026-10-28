@@ -34,6 +34,14 @@ const (
 	TokenEndClass
 	TokenInterface
 	TokenEndInterface
+	TokenEndGet // END_GET of a property accessor
+	TokenEndSet // END_SET of a property accessor
+	TokenEndNamespace
+	TokenEndConfiguration
+	TokenEndResource
+	TokenInitialStep // INITIAL_STEP, the SFC step a chart starts in
+	TokenEndStep
+	TokenEndTransition
 
 	// Keywords - Variable blocks
 	TokenVar
@@ -47,6 +55,7 @@ const (
 	TokenVarConfig
 	TokenVarStat
 	TokenVarInst
+	TokenVarGeneric
 	TokenEndVar
 
 	// Keywords - Control flow
@@ -229,6 +238,19 @@ var keywords = []struct {
 	{"END_CLASS", TokenEndClass},
 	{"INTERFACE", TokenInterface},
 	{"END_INTERFACE", TokenEndInterface},
+	{"END_GET", TokenEndGet},
+	{"END_SET", TokenEndSet},
+
+	// Namespaces, configurations and SFC. Their openers (NAMESPACE,
+	// CONFIGURATION, RESOURCE, STEP, TRANSITION, GET, SET) are common
+	// identifiers in PLC code, so the lexer leaves them identifiers and the
+	// formatter recognises them by the closing keyword that follows.
+	{"END_NAMESPACE", TokenEndNamespace},
+	{"END_CONFIGURATION", TokenEndConfiguration},
+	{"END_RESOURCE", TokenEndResource},
+	{"INITIAL_STEP", TokenInitialStep},
+	{"END_STEP", TokenEndStep},
+	{"END_TRANSITION", TokenEndTransition},
 
 	// Variable blocks
 	{"VAR", TokenVar},
@@ -242,6 +264,7 @@ var keywords = []struct {
 	{"VAR_CONFIG", TokenVarConfig},
 	{"VAR_STAT", TokenVarStat},
 	{"VAR_INST", TokenVarInst},
+	{"VAR_GENERIC", TokenVarGeneric},
 	{"END_VAR", TokenEndVar},
 
 	// Control flow
@@ -387,7 +410,9 @@ func IsBlockEnd(tt TokenType) bool {
 	switch tt {
 	case TokenEndProgram, TokenEndFunction, TokenEndFunctionBlock,
 		TokenEndAction, TokenEndMethod, TokenEndProperty, TokenEndClass,
-		TokenEndInterface, TokenEndVar, TokenEndIf, TokenEndCase, TokenEndFor,
+		TokenEndInterface, TokenEndGet, TokenEndSet, TokenEndNamespace,
+		TokenEndConfiguration, TokenEndResource, TokenEndStep, TokenEndTransition,
+		TokenEndVar, TokenEndIf, TokenEndCase, TokenEndFor,
 		TokenEndWhile, TokenEndRepeat, TokenEndType, TokenEndStruct, TokenEndUnion:
 		return true
 	}

@@ -129,9 +129,6 @@ func runStdin(opts options, stdin io.Reader, stdout io.Writer) error {
 	}
 	var formatted bytes.Buffer
 	if _, err := formatter.Copy(&formatted, bytes.NewReader(src)); err != nil {
-		return err
-	}
-	if err := formatter.Verify(string(src), formatted.String()); err != nil {
 		return fmt.Errorf("<stdin>: %w", err)
 	}
 	if !opts.check && !opts.diff {

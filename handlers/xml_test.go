@@ -3,10 +3,13 @@ package handlers
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ysmilda/stformat/formatter"
 )
 
 // TestXMLFiles formats every testdata/*.in.{tcpou,tcgvl,tcdut,tcio} file and
@@ -183,5 +186,29 @@ func TestRegistryIgnoresOtherXML(t *testing.T) {
 		if _, err := r.ForExtension(ext); err == nil {
 			t.Errorf("ForExtension(%q) found a handler, want ErrUnsupportedFileType", ext)
 		}
+	}
+}
+
+// TestXMLSyntaxErrorLine checks that a syntax error in an ST section names the
+// line of the TwinCAT file, not of the section.
+func TestXMLSyntaxErrorLine(t *testing.T) {
+	t.Parallel()
+	src := "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+		"<TcPlcObject>\n" +
+		"  <POU Name=\"P\">\n" +
+		"    <Declaration><![CDATA[PROGRAM P\nVAR\nEND_VAR]]></Declaration>\n" +
+		"    <Implementation>\n" +
+		"      <ST><![CDATA[\nx := 1;\nIF a THEN\ny := 2;\n]]></ST>\n" +
+		"    </Implementation>\n" +
+		"  </POU>\n" +
+		"</TcPlcObject>\n"
+	_, err := (&XMLHandler{}).Format([]byte(src))
+	var se *formatter.SyntaxError
+	if !errors.As(err, &se) {
+		t.Fatalf("Format: %v, want a *formatter.SyntaxError", err)
+	}
+	// IF a THEN is on line 10 of the file.
+	if se.Line != 10 || se.Msg != "IF is never closed" {
+		t.Errorf("error = %v, want line 10: IF is never closed", se)
 	}
 }

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("NAMESPACE ACTION 000\n0END_NAMESPACE")

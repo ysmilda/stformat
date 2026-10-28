@@ -12,33 +12,34 @@ import (
 // whitespace, and every other token is byte-identical. Whitespace between
 // tokens, line endings and a leading byte order mark are free to change.
 //
-// It is the safety net in front of every write: a formatter bug that drops,
-// adds or reorders code makes the file fail here instead of being saved.
+// Format runs the same check on its own output, so a formatter bug that drops,
+// adds or reorders code makes the file fail instead of being saved. Verify is
+// for output produced some other way, and for tests.
 func Verify(before, after string) error {
 	// A byte order mark at the start of the file is not code, but anywhere
 	// else the same bytes are part of a token.
 	if bom := strings.HasPrefix(before, utf8BOM); bom == strings.HasPrefix(after, utf8BOM) && bom {
 		before, after = before[len(utf8BOM):], after[len(utf8BOM):]
 	}
-	a, b := codeTokens(before), codeTokens(after)
+	return compareTokens(lexer.Lex(before), lexer.Lex(after))
+}
+
+// compareTokens reports the first difference between the token stream of a
+// source and that of its formatted output that Verify does not accept. Both
+// streams end with their EOF token.
+func compareTokens(a, b []lexer.Token) error {
 	for i := range min(len(a), len(b)) {
-		if !sameToken(a[i], b[i]) {
+		switch {
+		case sameToken(a[i], b[i]):
+		case a[i].Type == lexer.TokenEOF:
+			return fmt.Errorf("formatting would add %q; output discarded", b[i].Literal)
+		case b[i].Type == lexer.TokenEOF:
+			return fmt.Errorf("formatting would drop %q; output discarded", a[i].Literal)
+		default:
 			return fmt.Errorf("formatting would change %q into %q; output discarded", a[i].Literal, b[i].Literal)
 		}
 	}
-	switch {
-	case len(a) > len(b):
-		return fmt.Errorf("formatting would drop %q; output discarded", a[len(b)].Literal)
-	case len(b) > len(a):
-		return fmt.Errorf("formatting would add %q; output discarded", b[len(a)].Literal)
-	}
 	return nil
-}
-
-// codeTokens lexes src the way the formatter sees it, without the EOF token.
-func codeTokens(src string) []lexer.Token {
-	toks := lexer.Lex(src)
-	return toks[:len(toks)-1]
 }
 
 // sameToken reports whether b is an acceptable rewrite of a.

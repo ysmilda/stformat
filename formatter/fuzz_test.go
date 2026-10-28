@@ -40,12 +40,25 @@ func FuzzFormat(f *testing.F) {
 			// editors write, so they are left out.
 			t.Skip()
 		}
-		out := Format(src)
+		// Most fuzz input is not well formed, so Format would refuse it. The
+		// layout it would have produced must still keep every token and be
+		// stable, so that is what is checked.
+		out := layout(src)
 		if err := Verify(src, out); err != nil {
 			t.Fatalf("%v\ninput:  %q\noutput: %q", err, src, out)
 		}
-		if again := Format(out); again != out {
+		if again := layout(out); again != out {
 			t.Fatalf("not idempotent\ninput: %q\nonce:  %q\ntwice: %q", src, out, again)
 		}
+		// Where Format accepts the input, it returns that same layout.
+		if formatted, err := Format(src); err == nil && formatted != out {
+			t.Fatalf("Format differs from the layout\ninput: %q\nFormat: %q\nlayout: %q", src, formatted, out)
+		}
 	})
+}
+
+// layout returns the formatter's output for src whether or not src is well
+// formed: Format without the structure check and the verification.
+func layout(src string) string {
+	return newPrinter(src, LineEnding(src)).run()
 }

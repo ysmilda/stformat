@@ -14,7 +14,8 @@ import (
 // "stformat:ignore" in the leading comment block is streamed straight through:
 // the input is never parsed, so an ignored stream may be of any size. Any other
 // input is read in full and formatted, because wrapping a line at 120
-// characters needs the whole line and the block structure around it.
+// columns needs the whole line and the block structure around it; it fails as
+// Format does, before anything is written to dst.
 func Copy(dst io.Writer, src io.Reader) (int64, error) {
 	br := bufio.NewReader(src)
 	head, ignored := readLeadingComments(br)
@@ -26,7 +27,11 @@ func Copy(dst io.Writer, src io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return io.Copy(dst, strings.NewReader(Format(string(source))))
+	formatted, err := Format(string(source))
+	if err != nil {
+		return 0, err
+	}
+	return io.Copy(dst, strings.NewReader(formatted))
 }
 
 // readLeadingComments consumes the comment block at the top of br. It returns
