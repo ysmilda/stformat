@@ -1,6 +1,7 @@
 // What the wrap must not touch.
 // The reflow breaks a line at 120 columns, but only when the line is code.
 // Each case below is the same rule against a different kind of not-code.
+
 // A long call inside an ignored region. The region is already how its author wants it.
 
 PROGRAM ignored
@@ -14,6 +15,7 @@ anotherveryverylongfunction(
 	thirdArgument := yetAnotherValue
 );
 END_PROGRAM
+
 // The short line opens the block comment, so the long line after it is comment text.
 
 PROGRAM blockOpen
@@ -22,6 +24,7 @@ veryveryverylongfunction(firstArgument := aValueWithALongName, secondArgument :=
 *)
 cal(a := 1, b := 2);
 END_PROGRAM
+
 // The comment opens and closes on the long line itself, so the next line is code again.
 
 PROGRAM blockClosed
@@ -32,6 +35,7 @@ veryveryverylongfunction(
 	thirdArgument := yetAnotherValue
 );
 END_PROGRAM
+
 // An opening delimiter inside a string literal is text, not a comment.
 
 PROGRAM delimiterInString
@@ -54,11 +58,13 @@ cal(
 	p := 15
 );
 END_PROGRAM
+
 // A comma inside a string literal does not separate arguments.
 
 PROGRAM commaInString
 Log(id := 1, msgFmtStr := 'one, two', strArg := 'three');
 END_PROGRAM
+
 // A string literal that runs over a line break stays one token; the list the source broke open stays broken.
 
 PROGRAM stringSpanningLines
@@ -69,6 +75,7 @@ ADSLOGSTR(
 	strArg := sArg
 );
 END_PROGRAM
+
 // Over 120 columns with a literal that runs onto the next line: the call breaks, the literal is left as it is.
 
 PROGRAM callWithMultilineString

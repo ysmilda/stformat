@@ -1,7 +1,7 @@
 {attribute 'qualified_only'}
 
 TYPE S :
-	(  // Some comment
+	( // Some comment
 		A := 10,
 		B := 20,
 		C := 30,

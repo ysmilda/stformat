@@ -46,6 +46,7 @@ END_STEP
 TRANSITION FROM Idle TO Run := bStart;
 END_TRANSITION
 END_PROGRAM
+
 // The same words used as names stay names.
 
 PROGRAM Names
@@ -60,6 +61,7 @@ IF Step > 3 THEN
 	Step := 0;
 END_IF
 END_PROGRAM
+
 // An opener right after a POU header, with no VAR block between.
 
 PROGRAM Direct

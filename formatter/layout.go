@@ -41,7 +41,12 @@ import (
 // that list broken open, and a break before or after an operator keeps that
 // chain broken. A break anywhere else inside a statement is dropped. The output
 // of a broken list or chain has breaks in exactly those places, so formatting
-// it again lays it out the same way.
+// it again lays it out the same way. The value list of an enum is always broken
+// open, one value per line.
+//
+// A comment ends the line it is on, so a list that holds one never reaches the
+// layout whole. The token pass breaks such a list open itself, in the same
+// shape as rule 1 (see splitsOpen).
 
 // maxLineLen is the widest a line may be, in columns, before it is broken.
 const maxLineLen = 120
@@ -318,8 +323,15 @@ func (r *renderer) fits(nodes []node, after int) bool {
 
 // chain returns the positions in nodes of the operators that the sequence
 // breaks at, and whether the source broke the line at one of them. An operator
-// at either end of the sequence joins nothing on this line and is no break.
+// at either end of the sequence joins nothing on this line and is no break,
+// and a sequence that holds a comma (the items of a list an earlier line
+// opened) is no chain: an operator does not join across items.
 func (r *renderer) chain(nodes []node) (ops []int, broken bool) {
+	for _, n := range nodes {
+		if n.l == nil && r.atoms[n.a].typ == lexer.TokenComma {
+			return nil, false
+		}
+	}
 	lowest := 0
 	for i := 1; i < len(nodes)-1; i++ {
 		if nodes[i].l == nil {
@@ -753,7 +765,7 @@ func (f *printer) layoutLine() {
 		// so a line without one is done.
 		broken := false
 		for i, s := range spans[1:n] {
-			if f.breakBefore(s.tok) && (keepsBreak(f.tokens[s.tok].Type) || keepsBreak(f.tokens[spans[i].tok].Type)) {
+			if f.keptBreak(s.tok) && (keepsBreak(f.tokens[s.tok].Type) || keepsBreak(f.tokens[spans[i].tok].Type)) {
 				broken = true
 				break
 			}
@@ -781,7 +793,7 @@ func (f *printer) layoutLine() {
 			text:  line[at(s.start):at(s.end)],
 			sep:   sep,
 			typ:   t.Type,
-			nl:    i > 0 && f.breakBefore(s.tok),
+			nl:    i > 0 && f.keptBreak(s.tok),
 			level: opLevel(t.Type, f.afterOperandAt(s.tok)),
 		}
 		prevEnd = s.end
@@ -827,4 +839,11 @@ func (f *printer) breakBefore(i int) bool {
 	}
 	prev, tok := f.tokens[i-1], f.tokens[i]
 	return strings.IndexByte(f.source[prev.Offset+len(prev.Literal):tok.Offset], '\n') >= 0
+}
+
+// keptBreak reports whether the line breaks right before token i for the
+// layout: where the source breaks, and right after the '(' of an enum's value
+// list, which is always broken open.
+func (f *printer) keptBreak(i int) bool {
+	return f.breakBefore(i) || (i > 0 && f.enumOpen[i-1])
 }

@@ -102,6 +102,12 @@ type printer struct {
 	pendingNL bool
 
 	pendingBlank bool
+	// opened is set when a block was opened since the last line break, so
+	// that a blank line the source has right after the opener is dropped.
+	opened bool
+	// enumOpen holds the token index of the '(' of each enum value list,
+	// which the layout always breaks open.
+	enumOpen map[int]bool
 	// lineBegin is where the current output line starts in buf, and spans
 	// are the tokens written on it so far, which endLine lays out once the
 	// line is complete. frozen marks a line that holds verbatim text and is
@@ -281,7 +287,7 @@ func (f *printer) emitVerbatim() bool {
 		f.pendingNL = false
 		f.pendingBlank = false
 		f.flush()
-		f.writeCh(' ')
+		f.trimTrailing()
 		f.writeCh(' ')
 	} else {
 		// The directive stands on a line of its own in the source, even
@@ -389,13 +395,41 @@ func (f *printer) flush() {
 	if f.lastCh != '\n' {
 		f.newline()
 	}
-	if blank {
+	// An ignored region copies the source's line breaks itself, so a blank
+	// line it ends with is the user's blank line already.
+	if blank || (f.userBlank() && (f.prevCh != '\n' || len(f.buf) < 2)) {
 		f.newline()
 	}
+	f.opened = false
 	for range f.depth {
 		f.writeCh('\t')
 	}
 	f.lineStart = true
+}
+
+// userBlank reports whether the source has a blank line before the current
+// token that the output keeps. One blank line is kept between two lines of a
+// block; a blank line right after a block opener or an opening bracket, or
+// right before a block closer or a closing bracket, is dropped.
+func (f *printer) userBlank() bool {
+	if f.opened || f.pos == 0 || f.pos >= len(f.tokens) {
+		return false
+	}
+	prev, tok := f.tokens[f.pos-1], f.tokens[f.pos]
+	switch prev.Type {
+	case lexer.TokenLParen, lexer.TokenLBracket:
+		return false
+	}
+	switch tok.Type {
+	case lexer.TokenEOF, lexer.TokenRParen, lexer.TokenRBracket,
+		lexer.TokenElse, lexer.TokenElsif, lexer.TokenUntil:
+		return false
+	}
+	if lexer.IsBlockEnd(tok.Type) {
+		return false
+	}
+	end := prev.Offset + len(prev.Literal)
+	return end <= tok.Offset && strings.Count(f.source[end:tok.Offset], "\n") >= 2
 }
 
 // attach writes a string, flushing any pending line break first,
@@ -474,13 +508,6 @@ func isIdentChar(b byte) bool {
 	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || isDigit(b)
 }
 
-// trimBlank removes the spaces and tabs around s. strings.TrimSpace would also
-// remove characters such as a form feed, which are tokens of the source that
-// the pass must keep.
-func trimBlank(s string) string {
-	return strings.Trim(s, " \t")
-}
-
 // writeRaw copies text from the source unchanged, newlines included.
 //
 // Only the tail goes through writeCh one byte at a time; the rest is handed to
@@ -540,6 +567,7 @@ func (f *printer) push(b blockKind) {
 	if b.indents() {
 		f.depth++
 	}
+	f.opened = true
 }
 
 func (f *printer) pop() blockKind {
@@ -559,30 +587,98 @@ func (f *printer) pop() blockKind {
 type openBracket struct {
 	ch     byte
 	offset int
+	// split is set when the token pass breaks the list open itself; see
+	// splitsOpen.
+	split bool
 }
 
 // openBracketAt records a '(' or '[' at the current token.
-func (f *printer) openBracketAt(ch byte) {
-	f.brackets = append(f.brackets, openBracket{ch, f.peek().Offset})
+func (f *printer) openBracketAt(ch byte, split bool) {
+	f.brackets = append(f.brackets, openBracket{ch, f.peek().Offset, split})
 }
 
 // closeBracketAt matches a ')' or ']' at the current token against the
-// innermost open bracket.
-func (f *printer) closeBracketAt(ch byte) {
+// innermost open bracket, and reports whether that bracket was split.
+func (f *printer) closeBracketAt(ch byte) bool {
 	want := byte('(')
 	if ch == ']' {
 		want = '['
 	}
 	n := len(f.brackets)
-	switch {
-	case n == 0:
+	if n == 0 {
 		f.fail(f.peek().Offset, "%c without a matching %c", ch, want)
-	case f.brackets[n-1].ch != want:
-		f.fail(f.peek().Offset, "%c closes the %c from line %d", ch, f.brackets[n-1].ch, f.line(f.brackets[n-1].offset))
-		f.brackets = f.brackets[:n-1]
-	default:
-		f.brackets = f.brackets[:n-1]
+		return false
 	}
+	b := f.brackets[n-1]
+	if b.ch != want {
+		f.fail(f.peek().Offset, "%c closes the %c from line %d", ch, b.ch, f.line(b.offset))
+	}
+	f.brackets = f.brackets[:n-1]
+	return b.split
+}
+
+// inSplit reports whether the innermost open bracket is split.
+func (f *printer) inSplit() bool {
+	return len(f.brackets) > 0 && f.brackets[len(f.brackets)-1].split
+}
+
+// splitsOpen reports whether the bracket at the current position is broken
+// open by the token pass rather than by the layout: one item per line, one
+// level deeper, and the closing bracket on a line of its own. The layout sees
+// one line at a time, and a comment ends a line, so a list that holds a
+// comment never reaches it whole; such a list is always split. Whether it is
+// depends on the tokens alone, so formatting the output again splits the same
+// lists.
+func (f *printer) splitsOpen() bool {
+	depth := 0
+	for i, t := range f.tokens[f.pos:] {
+		switch {
+		case t.Type == lexer.TokenLParen || t.Type == lexer.TokenLBracket:
+			depth++
+		case t.Type == lexer.TokenRParen || t.Type == lexer.TokenRBracket:
+			if depth--; depth == 0 {
+				return false
+			}
+		case lexer.IsComment(t.Type):
+			return true
+		case t.Type == lexer.TokenSemicolon || t.Type == lexer.TokenEOF || structural(t.Type) || f.opensBlockAt(f.pos+i):
+			// A list does not run past the end of its statement or into a block.
+			return false
+		}
+	}
+	return false
+}
+
+// openBracket writes the '(' or '[' at the current position.
+func (f *printer) openBracket(ch byte) {
+	f.flush()
+	enum := ch == '(' && f.top() == bType && f.lineStart
+	if enum {
+		if f.enumOpen == nil {
+			f.enumOpen = map[int]bool{}
+		}
+		f.enumOpen[f.pos] = true
+	}
+	split := f.splitsOpen()
+	f.openBracketAt(ch, split)
+	if ch == '(' {
+		f.handleLParen()
+	} else {
+		f.attach("[")
+	}
+	if split {
+		f.depth++
+		f.requestNL()
+	}
+}
+
+// closeBracket writes the ')' or ']' at the current position.
+func (f *printer) closeBracket(ch byte) {
+	if f.closeBracketAt(ch) {
+		f.depth = max(f.depth-1, 0)
+		f.startOwnLine()
+	}
+	f.attach(string(ch))
 }
 
 // checkClosed reports a block or bracket still open at the end of the input.
@@ -645,13 +741,20 @@ func isBlank(c byte) bool {
 }
 
 // endBreak requests the break that follows a closed block: a blank line
-// unless the next token closes another block or the source ends.
+// unless the next token closes another block, starts the next branch (ELSE,
+// ELSIF, UNTIL) or the source ends. A ';' that follows the closer (END_IF;)
+// stays on its line.
 func (f *printer) endBreak() {
-	next := f.peek().Type
-	if next != lexer.TokenEOF && !lexer.IsBlockEnd(next) {
-		f.requestBlank()
-	} else {
+	if f.peek().Type == lexer.TokenSemicolon {
+		f.attach(";")
+		f.advance()
+	}
+	switch next := f.peek().Type; {
+	case next == lexer.TokenEOF || lexer.IsBlockEnd(next),
+		next == lexer.TokenElse || next == lexer.TokenElsif || next == lexer.TokenUntil:
 		f.requestNL()
+	default:
+		f.requestBlank()
 	}
 }
 
@@ -1010,7 +1113,11 @@ func (f *printer) emitToken() {
 
 	case lexer.TokenComma:
 		f.attach(",")
-		f.space()
+		if f.inSplit() {
+			f.requestNL()
+		} else {
+			f.space()
+		}
 		f.advance()
 
 	case lexer.TokenColon:
@@ -1026,23 +1133,19 @@ func (f *printer) emitToken() {
 		f.advance()
 
 	case lexer.TokenLParen:
-		f.openBracketAt('(')
-		f.handleLParen()
+		f.openBracket('(')
 		f.advance()
 
 	case lexer.TokenRParen:
-		f.closeBracketAt(')')
-		f.attach(")")
+		f.closeBracket(')')
 		f.advance()
 
 	case lexer.TokenLBracket:
-		f.openBracketAt('[')
-		f.attach("[")
+		f.openBracket('[')
 		f.advance()
 
 	case lexer.TokenRBracket:
-		f.closeBracketAt(']')
-		f.attach("]")
+		f.closeBracket(']')
 		f.advance()
 
 	// ------- Identifiers and literals -------
@@ -1094,6 +1197,11 @@ func (f *printer) blankLineBeforeTop() {
 		return
 	}
 	f.flush()
+	// The indentation flush wrote is written again below; a line holding only
+	// it would read as content and add a second blank line.
+	if f.lineStart && f.lastCh == '\t' {
+		f.trimTrailing()
+	}
 	if f.lastCh != '\n' {
 		f.newline()
 	}
@@ -1110,7 +1218,8 @@ func (f *printer) blankLineBeforeTop() {
 // METHOD, ...): access and inheritance modifiers, the name, a return type after
 // ':' and EXTENDS / IMPLEMENTS lists, in whatever order the source has them. It
 // stops at the first token that is none of these (a second name included), so
-// the first VAR block or statement starts on a line of its own.
+// the first VAR block or statement starts on a line of its own. A ";" that
+// ends the header (METHOD m : INT;) stays on its line.
 func (f *printer) parseHeader() {
 	named := false
 	for {
@@ -1138,6 +1247,10 @@ func (f *printer) parseHeader() {
 			f.attach(tokenSpelling(tok))
 			f.advance()
 			f.parseNameList()
+		case lexer.TokenSemicolon:
+			f.attach(";")
+			f.advance()
+			return
 		default:
 			return
 		}
@@ -1318,7 +1431,12 @@ func (f *printer) restOfHeader(kind blockKind) {
 // opensBlock reports whether the token at the current position opens a block
 // of its own, so that it is not part of the header before it.
 func (f *printer) opensBlock() bool {
-	_, ok := f.openers[f.pos]
+	return f.opensBlockAt(f.pos)
+}
+
+// opensBlockAt reports whether the token at index i opens a block of its own.
+func (f *printer) opensBlockAt(i int) bool {
+	_, ok := f.openers[i]
 	return ok
 }
 
@@ -1543,7 +1661,7 @@ func (f *printer) isLabel() bool {
 func (f *printer) handleLParen() {
 	prev := f.prevType()
 	switch prev {
-	case lexer.TokenIdent, lexer.TokenRParen, lexer.TokenRBracket, lexer.TokenNot:
+	case lexer.TokenIdent, lexer.TokenRParen, lexer.TokenRBracket, lexer.TokenNot, lexer.TokenCaret:
 		f.attach("(")
 	case lexer.TokenNumber:
 		// A repetition in an array initialiser: [10(0)].
@@ -1715,7 +1833,7 @@ func (f *printer) handleAtom(tok lexer.Token, kw string) {
 }
 
 // emitComment emits a comment. A comment that trails code in the source stays
-// at the end of that line (two spaces separate it from the code); any other
+// at the end of that line (one space separates it from the code); any other
 // comment gets a line of its own. Directives keep their original spelling.
 func (f *printer) emitComment(tok lexer.Token) {
 	lit := tok.Literal
@@ -1725,7 +1843,7 @@ func (f *printer) emitComment(tok lexer.Token) {
 	if f.commentTrailsCode(tok) && !strings.Contains(lit, "\n") {
 		f.pendingNL = false
 		f.pendingBlank = false
-		f.writeCh(' ')
+		f.trimTrailing()
 		f.writeCh(' ')
 	} else {
 		// The comment stands on its own line in the source, so it keeps a line
@@ -1739,6 +1857,22 @@ func (f *printer) emitComment(tok lexer.Token) {
 	f.advance()
 }
 
+// trimTrailing removes the blanks written after the last token of the current
+// line, such as the space after a comma.
+func (f *printer) trimTrailing() {
+	end := f.lineBegin
+	if n := len(f.spans); n > 0 {
+		end = f.spans[n-1].end
+	}
+	for len(f.buf) > end && (f.lastCh == ' ' || f.lastCh == '\t') {
+		f.buf = f.buf[:len(f.buf)-1]
+		f.lastCh, f.prevCh = f.prevCh, 0
+		if len(f.buf) > 1 {
+			f.prevCh = f.buf[len(f.buf)-2]
+		}
+	}
+}
+
 // commentTrailsCode reports whether the comment token follows code on the same
 // source line.
 func (f *printer) commentTrailsCode(tok lexer.Token) bool {
@@ -1749,20 +1883,18 @@ func (f *printer) commentTrailsCode(tok lexer.Token) bool {
 // glued to it ("//note" becomes "// note"). Nothing else in a comment is
 // touched: its case, its indentation and its punctuation are content, so a
 // banner such as "(*****)", a "///" doc comment and commented-out code all
-// keep their exact text. A line comment holding only blanks is trimmed to
-// "//". Pragmas (opening with "{") are left unchanged. Line endings need no
-// attention here: the formatter works on LF internally and restores the ending
-// of the input at the end.
+// keep their exact text. A line comment loses its trailing blanks, so one
+// holding only blanks is trimmed to "//". Pragmas (opening with "{") are left
+// unchanged. Line endings need no attention here: the formatter works on LF
+// internally and restores the ending of the input at the end.
 func normalizeComment(lit string) string {
 	switch {
 	case strings.HasPrefix(lit, "//"):
-		body := lit[2:]
-		if trimBlank(body) == "" {
-			return "//"
-		}
+		body := strings.TrimRight(lit[2:], " \t")
 		if startsWord(body) {
 			return "// " + body
 		}
+		return "//" + body
 	case strings.HasPrefix(lit, "(*") && strings.HasSuffix(lit, "*)") && len(lit) > 4:
 		if startsWord(lit[2:]) {
 			return "(* " + lit[2:]
@@ -1778,4 +1910,22 @@ func startsWord(s string) bool {
 	}
 	c := s[0]
 	return (isIdentChar(c) && c != '_') || c >= utf8.RuneSelf
+}
+
+// structural reports whether a token of type tt has a layout of its own that
+// starts or ends a line or a block, so that it is never part of a list.
+func structural(tt lexer.TokenType) bool {
+	switch tt {
+	case lexer.TokenProgram, lexer.TokenFunction, lexer.TokenFunctionBlock, lexer.TokenClass,
+		lexer.TokenInterface, lexer.TokenMethod, lexer.TokenProperty, lexer.TokenAction,
+		lexer.TokenTypeKw, lexer.TokenVar, lexer.TokenVarInput, lexer.TokenVarOutput,
+		lexer.TokenVarInOut, lexer.TokenVarTemp, lexer.TokenVarGlobal, lexer.TokenVarExternal,
+		lexer.TokenVarConfig, lexer.TokenVarStat, lexer.TokenVarInst, lexer.TokenVarAccess,
+		lexer.TokenVarGeneric, lexer.TokenStruct, lexer.TokenUnion, lexer.TokenInitialStep,
+		lexer.TokenIf, lexer.TokenFor, lexer.TokenWhile, lexer.TokenCase, lexer.TokenJmp,
+		lexer.TokenRepeat, lexer.TokenThen, lexer.TokenDo, lexer.TokenElse, lexer.TokenElsif,
+		lexer.TokenUntil, lexer.TokenExit, lexer.TokenContinue, lexer.TokenReturn:
+		return true
+	}
+	return lexer.IsBlockEnd(tt)
 }

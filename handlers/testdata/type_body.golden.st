@@ -1,6 +1,7 @@
 // The value list of a TYPE.
 // A TYPE body is a list of values like a call's argument list, so it breaks at the same limit into the same layout.
 // The bracket depth is carried from line to line, and text that is not structure must not feed it.
+
 // A body over the limit breaks one member per line.
 
 TYPE EState :
@@ -27,7 +28,9 @@ END_TYPE
 // One member cannot be split any further, so the line stays long.
 
 TYPE t :
-	(A := 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000);
+	(
+		A := 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+	);
 END_TYPE
 
 // A parenthesis inside a comment is text, so it does not open a level.

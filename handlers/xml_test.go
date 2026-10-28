@@ -141,6 +141,12 @@ func TestLooksLikeST(t *testing.T) {
 		"(key := 'aaa', description := 'slot')": true,
 		"arr : ARRAY[0..3] OF INT;":             true,
 		"s : STRING(80) := 'hi';":               true,
+		"//note\nMETHOD m : UDINT\nVAR_INPUT\nEND_VAR": true,
+		"{attribute 'x'}\n(* a *)\nPROPERTY p : BOOL":  true,
+		"VAR\nEND_VAR":              true,
+		"PUBLIC\nVAR\nEND_VAR":      true,
+		"Public API for the module": false,
+		"// only a comment":         false,
 	}
 	for in, want := range cases {
 		if got := looksLikeST(in); got != want {

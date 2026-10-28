@@ -1,6 +1,7 @@
 PROGRAM WrapCalls
 VAR
 	result : BOOL;
+
 	// Array literal whose elements are parenthesized constructor calls.
 	// The closing ']' must be preserved when the line overflows.
 	slots : ARRAY[0..3] OF ST_SlotConfig[

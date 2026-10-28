@@ -85,14 +85,64 @@ func TestFormatIDs(t *testing.T) {
 			want: "PROGRAM p\nFOR i := 1 TO 10 DO\n\tIF x THEN\n\t\tEXIT;\n\tEND_IF\n\n\tRETURN;\nEND_FOR\nEND_PROGRAM\n",
 		},
 		{
+			name: "one blank line between statements is kept",
+			in:   "PROGRAM p\nVAR\n\n\ta : INT;\n\n\n\tb : INT;\n\nEND_VAR\na := 1;\n\nb := 2;\nEND_PROGRAM",
+			want: "PROGRAM p\nVAR\n\ta : INT;\n\n\tb : INT;\nEND_VAR\n\na := 1;\n\nb := 2;\nEND_PROGRAM\n",
+		},
+		{
+			name: "enum values each get a line",
+			in:   "TYPE E :\n\t(IDLE := 0, OK, BUSY);\nEND_TYPE",
+			want: "TYPE E :\n\t(\n\t\tIDLE := 0,\n\t\tOK,\n\t\tBUSY\n\t);\nEND_TYPE\n",
+		},
+		{
+			name: "list with comments keeps the break after its bracket",
+			in:   "TYPE E :\n(\n\ta:= 0,\t//first\n\tb := 1 \t//second\n)USINT;\nEND_TYPE",
+			want: "TYPE E :\n\t(\n\t\ta := 0, // first\n\t\tb := 1 // second\n\t) USINT;\nEND_TYPE\n",
+		},
+		{
+			name: "call with comments keeps the break after its bracket",
+			in:   "PROGRAM p\nx := F(\n a, // first\n b);\nEND_PROGRAM",
+			want: "PROGRAM p\nx := F(\n\ta, // first\n\tb\n);\nEND_PROGRAM\n",
+		},
+		{
+			name: "call through a dereference has no space before its bracket",
+			in:   "PROGRAM p\nSUPER^();\nTHIS^ (x := 1);\nEND_PROGRAM",
+			want: "PROGRAM p\nSUPER^();\nTHIS^(x := 1);\nEND_PROGRAM\n",
+		},
+		{
+			name: "semicolon after a block closer stays on its line",
+			in:   "PROGRAM p\nIF a THEN\nIF b THEN\nx := 1;\nEND_IF;\nEND_IF;\ny := 2;\nEND_PROGRAM",
+			want: "PROGRAM p\nIF a THEN\n\tIF b THEN\n\t\tx := 1;\n\tEND_IF;\nEND_IF;\n\ny := 2;\nEND_PROGRAM\n",
+		},
+		{
+			name: "semicolon after a method header stays on its line",
+			in:   "METHOD PUBLIC m : UINT;\nVAR_INPUT\nEND_VAR\n",
+			want: "METHOD PUBLIC m : UINT;\nVAR_INPUT\nEND_VAR\n",
+		},
+		{
+			name: "no blank line between a closed block and the next branch",
+			in:   "PROGRAM p\nIF a THEN\nIF b THEN\nx := 1;\nEND_IF\nELSIF c THEN\nIF d THEN\nx := 2;\nEND_IF\nELSE\nCASE e OF\n1: x := 3;\nEND_CASE\nEND_IF\nEND_PROGRAM",
+			want: "PROGRAM p\nIF a THEN\n\tIF b THEN\n\t\tx := 1;\n\tEND_IF\nELSIF c THEN\n\tIF d THEN\n\t\tx := 2;\n\tEND_IF\nELSE\n\tCASE e OF\n\t\t1:\n\t\t\tx := 3;\n\tEND_CASE\nEND_IF\nEND_PROGRAM\n",
+		},
+		{
+			name: "line comment loses its trailing blanks",
+			in:   "PROGRAM p\nx := 1; // note \t\n// \n//--  \nEND_PROGRAM",
+			want: "PROGRAM p\nx := 1; // note\n//\n//--\nEND_PROGRAM\n",
+		},
+		{
+			name: "call holding a comment is broken open",
+			in:   "PROGRAM p\nx := F(a, // first\n b, c);\nEND_PROGRAM",
+			want: "PROGRAM p\nx := F(\n\ta, // first\n\tb,\n\tc\n);\nEND_PROGRAM\n",
+		},
+		{
 			name: "comments on own line",
 			in:   "PROGRAM p\nx:=1; //set x\n(* block\ncomment *)\ny:=2;\nEND_PROGRAM",
-			want: "PROGRAM p\nx := 1;  // set x\n(* block\ncomment *)\ny := 2;\nEND_PROGRAM\n",
+			want: "PROGRAM p\nx := 1; // set x\n(* block\ncomment *)\ny := 2;\nEND_PROGRAM\n",
 		},
 		{
 			name: "trailing comment keeps its place",
 			in:   "PROGRAM p\nVAR\nx : INT; //the counter\nEND_VAR\nx := 1; //set x\ny := 2;\nEND_PROGRAM",
-			want: "PROGRAM p\nVAR\n\tx : INT;  // the counter\nEND_VAR\n\nx := 1;  // set x\ny := 2;\nEND_PROGRAM\n",
+			want: "PROGRAM p\nVAR\n\tx : INT; // the counter\nEND_VAR\n\nx := 1; // set x\ny := 2;\nEND_PROGRAM\n",
 		},
 		{
 			name: "var colon alignment removed",
@@ -196,12 +246,12 @@ func TestFormatIDs(t *testing.T) {
 		{
 			name: "trailing comment does not count towards the line length",
 			in:   "PROGRAM p\nsomeFunction(firstArgument := aValueWithALongName, secondArgument := anotherValueWithALongName, thirdArgument := yetAnotherValue); // an explanation of the call\nEND_PROGRAM",
-			want: "PROGRAM p\nsomeFunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n);  // an explanation of the call\nEND_PROGRAM\n",
+			want: "PROGRAM p\nsomeFunction(\n\tfirstArgument := aValueWithALongName,\n\tsecondArgument := anotherValueWithALongName,\n\tthirdArgument := yetAnotherValue\n); // an explanation of the call\nEND_PROGRAM\n",
 		},
 		{
 			name: "trailing comment moves to the then line when the condition wraps",
 			in:   "PROGRAM p\nIF flagOperationalReady AND flagMaintenanceOverride AND flagEmergencyStopActive AND flagPowerAvailable AND flagGateClosed AND flagInterlockEngaged AND flagSequenceRunning AND flagAbortRequested AND flagResetPermitted AND flagCycleComplete AND flagAutoModeSelected THEN // all flags\n    x := TRUE;\nEND_IF\nEND_PROGRAM",
-			want: "PROGRAM p\nIF flagOperationalReady\n\tAND flagMaintenanceOverride\n\tAND flagEmergencyStopActive\n\tAND flagPowerAvailable\n\tAND flagGateClosed\n\tAND flagInterlockEngaged\n\tAND flagSequenceRunning\n\tAND flagAbortRequested\n\tAND flagResetPermitted\n\tAND flagCycleComplete\n\tAND flagAutoModeSelected\nTHEN  // all flags\n\tx := TRUE;\nEND_IF\nEND_PROGRAM\n",
+			want: "PROGRAM p\nIF flagOperationalReady\n\tAND flagMaintenanceOverride\n\tAND flagEmergencyStopActive\n\tAND flagPowerAvailable\n\tAND flagGateClosed\n\tAND flagInterlockEngaged\n\tAND flagSequenceRunning\n\tAND flagAbortRequested\n\tAND flagResetPermitted\n\tAND flagCycleComplete\n\tAND flagAutoModeSelected\nTHEN // all flags\n\tx := TRUE;\nEND_IF\nEND_PROGRAM\n",
 		},
 		{
 			name: "stformat off and on ignore a section",
@@ -240,7 +290,7 @@ func TestFormatIDs(t *testing.T) {
 		{
 			name: "directive trailing code stays on that line",
 			in:   "PROGRAM p\nIF a > 0 THEN\nx := 1; // stformat:off\n   y   :=   2;\n// stformat:on\nEND_IF\nEND_PROGRAM",
-			want: "PROGRAM p\nIF a > 0 THEN\n\tx := 1;  // stformat:off\n   y   :=   2;\n\t// stformat:on\nEND_IF\nEND_PROGRAM\n",
+			want: "PROGRAM p\nIF a > 0 THEN\n\tx := 1; // stformat:off\n   y   :=   2;\n\t// stformat:on\nEND_IF\nEND_PROGRAM\n",
 		},
 		{
 			name: "stformat ignore in the leading comment block leaves the file alone",
@@ -255,7 +305,7 @@ func TestFormatIDs(t *testing.T) {
 		{
 			name: "directive spelling and case are preserved",
 			in:   "PROGRAM p\nx:=1; // STFormat : Off\n    y   :=   2;\n// stformat:on\nz:=3;\nEND_PROGRAM",
-			want: "PROGRAM p\nx := 1;  // STFormat : Off\n    y   :=   2;\n// stformat:on\nz := 3;\nEND_PROGRAM\n",
+			want: "PROGRAM p\nx := 1; // STFormat : Off\n    y   :=   2;\n// stformat:on\nz := 3;\nEND_PROGRAM\n",
 		},
 		{
 			// A typed literal runs from its type name to its closing quote,
@@ -298,7 +348,7 @@ func TestFormatIDs(t *testing.T) {
 			// The bracket stays where it is and only the members break.
 			name: "type value list continued from the line above breaks its members",
 			in:   "TYPE continued :\n(  // the names\n\tA := 0, B := 1, C := 2, D := 3, E := 4, F := 5, G := 6, H := 7, I := 8, J := 9, K := 10, L := 11, M := 12, N := 13, O := 14, P := 15\n);\nEND_TYPE",
-			want: "TYPE continued :\n\t(  // the names\n\t\tA := 0,\n\t\tB := 1,\n\t\tC := 2,\n\t\tD := 3,\n\t\tE := 4,\n\t\tF := 5,\n\t\tG := 6,\n\t\tH := 7,\n\t\tI := 8,\n\t\tJ := 9,\n\t\tK := 10,\n\t\tL := 11,\n\t\tM := 12,\n\t\tN := 13,\n\t\tO := 14,\n\t\tP := 15\n\t);\nEND_TYPE\n",
+			want: "TYPE continued :\n\t( // the names\n\t\tA := 0,\n\t\tB := 1,\n\t\tC := 2,\n\t\tD := 3,\n\t\tE := 4,\n\t\tF := 5,\n\t\tG := 6,\n\t\tH := 7,\n\t\tI := 8,\n\t\tJ := 9,\n\t\tK := 10,\n\t\tL := 11,\n\t\tM := 12,\n\t\tN := 13,\n\t\tO := 14,\n\t\tP := 15\n\t);\nEND_TYPE\n",
 		},
 		{
 			// The line is over the limit, but the ')' it ends with closes
@@ -488,7 +538,7 @@ func TestCopyUnterminatedInput(t *testing.T) {
 	}{
 		{in: "x:=1;", want: "x := 1;\n"},
 		{in: "//hello", want: "// hello\n"},
-		{in: "// header\n\nx:=1;", want: "// header\nx := 1;\n"},
+		{in: "// header\n\nx:=1;", want: "// header\n\nx := 1;\n"},
 		{in: "(* a\nb *)\nx:=1;", want: "(* a\nb *)\nx := 1;\n"},
 		{in: "// stformat:ignore", want: "// stformat:ignore"},
 	}
@@ -529,7 +579,7 @@ func TestByteOrderMark(t *testing.T) {
 func TestLineEndings(t *testing.T) {
 	t.Parallel()
 	body := "PROGRAM p\nVAR\n x : INT; //the counter\nEND_VAR\n(* block\ncomment *)\nx:=1; //set x\nEND_PROGRAM\n"
-	wantBody := "PROGRAM p\nVAR\n\tx : INT;  // the counter\nEND_VAR\n\n(* block\ncomment *)\nx := 1;  // set x\nEND_PROGRAM\n"
+	wantBody := "PROGRAM p\nVAR\n\tx : INT; // the counter\nEND_VAR\n\n(* block\ncomment *)\nx := 1; // set x\nEND_PROGRAM\n"
 
 	cases := []struct {
 		name string
