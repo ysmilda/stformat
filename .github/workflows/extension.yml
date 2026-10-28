@@ -15,9 +15,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GO_VERSION: '1.27'
-
 jobs:
   vsix:
     name: Build VSIX
@@ -29,7 +26,7 @@ jobs:
       # format.csproj runs `go build` for Resources\stformat.exe.
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - uses: microsoft/setup-msbuild@v3
 
