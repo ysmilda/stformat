@@ -11,6 +11,10 @@
       <Group guid="format" id="MyMenuGroup" priority="0x0600">
         <Parent guid="VSMainMenu" id="Tools"/>
       </Group>
+      <!-- Right-click menu of code editors. -->
+      <Group guid="format" id="EditorContextGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_CTXT_CODEWIN"/>
+      </Group>
       <!-- Right-click menu of the solution node in Solution Explorer. -->
       <Group guid="format" id="SolutionContextGroup" priority="0x0600">
         <Parent guid="guidSHLMainMenu" id="IDM_VS_CTXT_SOLNNODE"/>
@@ -42,6 +46,9 @@
   </Commands>
 
   <CommandPlacements>
+    <CommandPlacement guid="format" id="MyCommand" priority="0x0100">
+      <Parent guid="format" id="EditorContextGroup" />
+    </CommandPlacement>
     <CommandPlacement guid="format" id="FormatSolutionCommand" priority="0x0100">
       <Parent guid="format" id="SolutionContextGroup" />
     </CommandPlacement>
@@ -50,6 +57,7 @@
   <Symbols>
     <GuidSymbol name="format" value="{030fb4a7-a21d-4b36-a28d-ffc41b84fbfc}">
       <IDSymbol name="MyMenuGroup" value="0x0001" />
+      <IDSymbol name="EditorContextGroup" value="0x0002" />
       <IDSymbol name="SolutionContextGroup" value="0x0003" />
       <IDSymbol name="MyCommand" value="0x0100" />
       <IDSymbol name="FormatSolutionCommand" value="0x0101" />

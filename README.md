@@ -104,7 +104,8 @@ if (Test-Path "$ext\StFormat") { Remove-Item "$ext\StFormat" -Recurse -Force }
 
 The extension adds:
 
-- **Format Structured Text** (Tools menu): formats the active document.
+- **Format Structured Text** (Tools menu and the code editor's context menu):
+  formats the active document.
 - **Format Solution** (Tools menu and the solution's context menu in Solution
   Explorer): formats every supported file of the solution on disk, including
   all files of the TwinCAT PLC projects. For a TwinCAT solution it asks first,
