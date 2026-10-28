@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  VSIX for Visual Studio 2017/2019 and the TwinCAT 4024 XAE Shell (32-bit,
+  based on Visual Studio 2017). It compiles the sources of ..\format, which
+  targets Visual Studio 2022 and later; only the SDK and the manifest differ.
+-->
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <VSToolsPath Condition="'$(VSToolsPath)' == ''">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)</VSToolsPath>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectTypeGuids>{82b43b9b-a64c-4715-b499-d71e9ca2bd60};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+    <ProjectGuid>{5C3E2B0A-7D41-4F2E-9B6A-1E8D2C4F7A15}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>format</RootNamespace>
+    <AssemblyName>format</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <UseCodebase>true</UseCodebase>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>true</IncludeDebugSymbolsInVSIXContainer>
+    <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
+    <CopyBuildOutputToOutputDirectory>true</CopyBuildOutputToOutputDirectory>
+    <CopyOutputSymbolsToOutputDirectory>true</CopyOutputSymbolsToOutputDirectory>
+    <StartAction>Program</StartAction>
+    <StartProgram Condition="'$(DevEnvDir)' != ''">$(DevEnvDir)devenv.exe</StartProgram>
+    <StartArguments>/rootsuffix Exp</StartArguments>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <CopyVsixExtensionFiles>False</CopyVsixExtensionFiles>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\format\Commands\Format.cs" Link="Commands\Format.cs" />
+    <Compile Include="..\format\Log.cs" Link="Log.cs" />
+    <Compile Include="..\format\Properties\AssemblyInfo.cs" Link="Properties\AssemblyInfo.cs" />
+    <Compile Include="..\format\formatPackage.cs" Link="formatPackage.cs" />
+    <Compile Include="..\format\source.extension.cs" Link="source.extension.cs" />
+    <Compile Include="..\format\VSCommandTable.cs" Link="VSCommandTable.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="source.extension.vsixmanifest">
+      <SubType>Designer</SubType>
+    </None>
+    <Content Include="..\format\Resources\Icon.png" Link="Resources\Icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+    <Content Include="..\format\Resources\stformat.exe" Link="Resources\stformat.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <VSCTCompile Include="..\format\VSCommandTable.vsct" Link="VSCommandTable.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Design" />
+    <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="TCatSysManagerLib">
+      <HintPath>..\format\References\TCatSysManagerLib.dll</HintPath>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+      <SpecificVersion>False</SpecificVersion>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Community.VisualStudio.VSCT" Version="16.0.29.13" PrivateAssets="all" />
+    <PackageReference Include="Community.VisualStudio.Toolkit.15" Version="15.0.551" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.14.2120" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <VSSDKTargetPath Condition="'$(VSSDKTargetPath)' == ''">$(NuGetPackageRoot)microsoft.vssdk.buildtools\17.14.2120\tools\VSSDK</VSSDKTargetPath>
+  </PropertyGroup>
+  <Import Project="$(VSSDKTargetPath)\Microsoft.VsSDK.targets" Condition="Exists('$(VSSDKTargetPath)\Microsoft.VsSDK.targets')" />
+  <Target Name="BuildStformatExe" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <StformatRoot>$(MSBuildProjectDirectory)\..\..</StformatRoot>
+      <StformatExe>$(MSBuildProjectDirectory)\..\format\Resources\stformat.exe</StformatExe>
+    </PropertyGroup>
+    <Exec Command="go build -trimpath -o &quot;$(StformatExe)&quot; ." WorkingDirectory="$(StformatRoot)" EnvironmentVariables="GOOS=windows;GOARCH=amd64;CGO_ENABLED=0" Condition="Exists('$(StformatRoot)\go.mod')" />
+  </Target>
+</Project>
