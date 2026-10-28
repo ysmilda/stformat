@@ -17,13 +17,11 @@ import (
 // verbatim.
 type XMLHandler struct{}
 
-func (h *XMLHandler) Name() string { return "xml" }
-
+// Extensions returns the TwinCAT XML file extensions. Other XML files are left
+// alone: an <ST> or <Declaration> element there need not hold Structured Text.
 func (h *XMLHandler) Extensions() []string {
-	return []string{".tcpou", ".tcgvl", ".tcdut", ".tcio", ".tcproj", ".xml"}
+	return []string{".tcpou", ".tcgvl", ".tcdut", ".tcio"}
 }
-
-func (h *XMLHandler) IsST() bool { return false }
 
 type xmlEdit struct {
 	start, end int
@@ -69,6 +67,9 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 						ending = formatter.LineEnding(string(contents))
 					}
 					formatted := formatter.FormatWith(inner, ending)
+					if err := formatter.Verify(inner, formatted); err != nil {
+						return nil, err
+					}
 					// Declaration/implementation content starts and ends
 					// with a line break so git diffs are per-line readable.
 					wrapped := ending + strings.TrimRight(formatted, "\r\n") + ending

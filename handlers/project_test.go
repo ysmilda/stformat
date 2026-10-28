@@ -1,10 +1,9 @@
 package handlers
 
-// This file contains an opt-in integration test (TestProjectFormatLossless)
-// that runs against a real ST/TwinCAT project tree.
-//
-// It is enabled by setting the STFORMAT_PROJECT_DIR environment variable to
-// the directory containing the project, e.g. (PowerShell):
+// This file contains an integration test (TestProjectFormatLossless) that runs
+// against an ST/TwinCAT project tree. By default that is the sample project in
+// benchdata, so every test run and CI cover it. Point it at a real project by
+// setting the STFORMAT_PROJECT_DIR environment variable, e.g. (PowerShell):
 //
 //	$env:STFORMAT_PROJECT_DIR = 'C:\path\to\project'
 //	go test ./handlers -run TestProjectFormatLossless
@@ -30,17 +29,21 @@ import (
 )
 
 // projectDirEnv is the environment variable that points at a directory
-// containing an ST/TwinCAT project.
+// containing an ST/TwinCAT project. Without it the test uses defaultProjectDir.
 const projectDirEnv = "STFORMAT_PROJECT_DIR"
 
+// defaultProjectDir is the sample project the benchmarks run on: plain ST and
+// every TwinCAT XML file type.
+const defaultProjectDir = "benchdata"
+
 // TestProjectFormatLossless formats every supported file under the directory
-// named by projectDirEnv and verifies, without the internal lexer, that the
+// named by projectDirEnv (or defaultProjectDir) and verifies, without the internal lexer, that the
 // only differences are whitespace and character case.
 func TestProjectFormatLossless(t *testing.T) {
 	t.Parallel()
 	root := os.Getenv(projectDirEnv)
 	if root == "" {
-		t.Skipf("%s not set; skipping real-project format test", projectDirEnv)
+		root = defaultProjectDir
 	}
 	info, err := os.Stat(root)
 	if err != nil {

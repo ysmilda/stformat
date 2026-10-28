@@ -157,8 +157,8 @@ func TestRegistryExtensionMapping(t *testing.T) {
 			t.Errorf("ForExtension(%q): %v", ext, err)
 			continue
 		}
-		if h.Name() != "xml" {
-			t.Errorf("ForExtension(%q): expected xml handler, got %q", ext, h.Name())
+		if _, ok := h.(*XMLHandler); !ok {
+			t.Errorf("ForExtension(%q): expected xml handler, got %T", ext, h)
 		}
 	}
 	for _, ext := range []string{".st", ".iecst", ".tcst"} {
@@ -167,8 +167,21 @@ func TestRegistryExtensionMapping(t *testing.T) {
 			t.Errorf("ForExtension(%q): %v", ext, err)
 			continue
 		}
-		if h.Name() != "st" {
-			t.Errorf("ForExtension(%q): expected st handler, got %q", ext, h.Name())
+		if _, ok := h.(*STHandler); !ok {
+			t.Errorf("ForExtension(%q): expected st handler, got %T", ext, h)
+		}
+	}
+}
+
+// TestRegistryIgnoresOtherXML guards against formatting arbitrary XML: a
+// directory walk must not pick up .xml or .tcproj files, whose <ST> or
+// <Declaration> elements need not hold Structured Text.
+func TestRegistryIgnoresOtherXML(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	for _, ext := range []string{".xml", ".tcproj", ".plcproj"} {
+		if _, err := r.ForExtension(ext); err == nil {
+			t.Errorf("ForExtension(%q) found a handler, want ErrUnsupportedFileType", ext)
 		}
 	}
 }
