@@ -147,42 +147,86 @@ namespace format
             }
 
             string name = document?.Name ?? "PLC object";
-            bool changed = false;
 
+            // Both parts are read and formatted before either is written:
+            // with the editor open, writing one part can make TwinCAT write
+            // its editor's copy of the other part back.
+            var parts = new List<PlcPart>();
             if (declaration is not null)
             {
-                string original = declaration.DeclarationText;
-                string formatted = await FormatTextAsync(executable, original, name, interactive);
-                if (formatted is null)
-                {
-                    return;
-                }
-
-                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                changed |= ApplyPlcPart(name, "declaration", original, formatted, text =>
-                {
-                    ThreadHelper.ThrowIfNotOnUIThread();
-                    declaration.DeclarationText = text;
-                });
+                parts.Add(new PlcPart(
+                    "declaration",
+                    () =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        return declaration.DeclarationText;
+                    },
+                    text =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        declaration.DeclarationText = text;
+                    }));
             }
 
             // Only Structured Text implementations can be formatted; other
             // languages (FBD, LD, ...) are left untouched.
             if (implementation is not null && IsStructuredText(implementation))
             {
-                string original = implementation.ImplementationText;
-                string formatted = await FormatTextAsync(executable, original, name, interactive);
-                if (formatted is null)
+                parts.Add(new PlcPart(
+                    "implementation",
+                    () =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        return implementation.ImplementationText;
+                    },
+                    text =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        implementation.ImplementationText = text;
+                    }));
+            }
+
+            foreach (PlcPart part in parts)
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                part.Original = part.Get();
+                part.Formatted = await FormatTextAsync(executable, part.Original, name, interactive);
+                if (part.Formatted is null)
                 {
                     return;
                 }
+            }
 
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            bool changed = false;
+            foreach (PlcPart part in parts)
+            {
+                changed |= ApplyPlcPart(name, part.Kind, part.Original, part.Formatted, part.Set);
+            }
+
+            // TwinCAT can still write a stale editor copy back after the
+            // write; check once it has caught up and write again what it lost.
+            for (int round = 1; changed && round <= MaxReapplyRounds; round++)
+            {
+                await Task.Delay(ReapplyDelayMilliseconds);
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                changed |= ApplyPlcPart(name, "implementation", original, formatted, text =>
+
+                bool reverted = false;
+                foreach (PlcPart part in parts)
                 {
-                    ThreadHelper.ThrowIfNotOnUIThread();
-                    implementation.ImplementationText = text;
-                });
+                    string current = part.Get();
+                    if (Differs(WrapText(part.Formatted, part.Original), current))
+                    {
+                        Log.Warning($"{name}: {part.Kind} was reverted by TwinCAT, writing it again (round {round})");
+                        ApplyPlcPart(name, part.Kind, current, part.Formatted, part.Set);
+                        reverted = true;
+                    }
+                }
+
+                if (!reverted)
+                {
+                    break;
+                }
             }
 
             if (changed)
@@ -193,6 +237,28 @@ namespace format
             {
                 Log.Info($"No formatting changes for {name}");
             }
+        }
+
+        // How often, and how long after a write, the parts of a PLC object are
+        // checked for being reverted by TwinCAT.
+        private const int MaxReapplyRounds = 3;
+        private const int ReapplyDelayMilliseconds = 150;
+
+        // The declaration or the implementation of a PLC object.
+        private sealed class PlcPart
+        {
+            public PlcPart(string kind, Func<string> get, Action<string> set)
+            {
+                Kind = kind;
+                Get = get;
+                Set = set;
+            }
+
+            public string Kind { get; }
+            public Func<string> Get { get; }
+            public Action<string> Set { get; }
+            public string Original { get; set; }
+            public string Formatted { get; set; }
         }
 
         // Applies the formatted text of one part (declaration or
