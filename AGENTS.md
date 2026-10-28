@@ -34,8 +34,8 @@ filters to workflows whose jobs are not required.
 build. To build the extension locally, run the msbuild commands from
 `extension.yml` against `extension\format\format.csproj`.
 
-Each workflow pins its Go version in a workflow-level `env: GO_VERSION`. Bump
-the value in every workflow file that needs it.
+Every workflow takes its Go version from `go.mod` (`go-version-file`), so
+bumping the `go` line in `go.mod` is the only change needed.
 
 To run a single test:
 
@@ -43,12 +43,13 @@ To run a single test:
 go test ./handlers -run TestSTFiles/addresses
 ```
 
-## Real-project lossless test (opt-in)
+## Project lossless test
 
 `TestProjectFormatLossless` in `handlers/project_test.go` formats every
-supported file in a real ST/TwinCAT project tree and independently verifies
+supported file in an ST/TwinCAT project tree and independently verifies
 (without using the internal lexer) that only whitespace and character case
-changed. It is skipped unless `STFORMAT_PROJECT_DIR` is set:
+changed. It runs on the sample project in `handlers/benchdata` by default;
+point it at a real project with `STFORMAT_PROJECT_DIR`:
 
 ```powershell
 $env:STFORMAT_PROJECT_DIR = 'C:\path\to\project'
@@ -73,7 +74,11 @@ equal, so any removed/added/reordered content fails the test.
 | `handlers/testdata/` | Golden test inputs (`*.in.*`) and expected outputs (`*.golden.*`) |
 | `internal/lexer/` | Tokenizer shared by the formatter and tests                          |
 
-Entry point is `main.go`, which wires the handler registry, expands file paths, and dispatches to handlers. Formatting is token-driven end to end: there is no AST and no separate parser pass.
+Entry point is `main.go`: `run(args, stdin, stdout, stderr)` parses flags, expands file paths, formats every file concurrently and only then writes; `cli_test.go` drives it directly. Exit codes: 1 means `-check` found unformatted files, 2 means an error (`exitCode`). Directory walks skip hidden and generated directories and `-exclude` patterns (`skipped`). `diff.go` writes `-diff` as a unified diff.
+
+Formatting is a single token pass (`formatter.go`, no AST) that writes each statement on one line and records which token each piece of the line is. When a line ends, `layout.go` lays it out from those tokens: bracketed lists and operator chains break when the line is over 120 columns (tab = 4) or when the source broke them at one of their break points. The rules, and the policy for user line breaks, are in the comment at the top of `layout.go`. No pass re-reads the output text, so strings, comments, pragmas and ignored regions never need special-casing.
+
+The token pass also tracks the block and bracket stack: `Format`/`FormatWith` return a `*SyntaxError` (with a line) for structure that does not close, except a POU left open (TwinCAT stores declarations without `END_`) and files with `stformat:off` regions. `NAMESPACE`, `CONFIGURATION`, `RESOURCE`, `STEP`, `TRANSITION`, `GET` and `SET` stay identifiers in the lexer; `findOpeners` makes them block openers only at a statement start with their `END_` keyword further on.
 
 ## Golden tests
 
@@ -83,7 +88,29 @@ Tests in `handlers/golden_test.go` compare formatter output against `.golden.*` 
 task golden
 ```
 
-The golden tests also assert **idempotency**: re-formatting output must not change it.
+The golden tests also assert **idempotency**: re-formatting output must not change it,
+and **losslessness** through `formatter.Verify`: the output must lex to the same
+tokens, with only whitespace, keyword case and comment spacing changed.
+
+## Safety net and fuzzing
+
+`formatter.Format` checks its own output before returning it, with the rules of
+`formatter.Verify(before, after)`: if formatting would add, drop or change a
+token, the file fails with an error and is not written. Do not weaken the check
+to make a test pass; fix the formatter.
+
+`FuzzFormat` in `formatter/fuzz_test.go` holds the layout to `Verify` and
+idempotency on arbitrary input, seeded from the golden inputs. Fuzz input is
+rarely well formed, so it uses `layout()`, which skips the structure check;
+layout tests on deliberately malformed input use it too. Run the fuzzer after any
+change to the lexer or the layout:
+
+```bash
+go test ./formatter -run '^$' -fuzz FuzzFormat -fuzztime 5m
+```
+
+Failing inputs it finds land in `formatter/testdata/fuzz/FuzzFormat/` and are
+replayed by every plain `go test` run; commit them with the fix.
 
 ## Toolchain versions
 
