@@ -107,7 +107,7 @@ func BenchmarkCorpusCRLF(b *testing.B) {
 }
 
 // BenchmarkCorpusAlreadyFormatted formats its own output, the steady state of a
-// -check run over an already formatted project.
+// --check run over an already formatted project.
 func BenchmarkCorpusAlreadyFormatted(b *testing.B) {
 	h := &STHandler{}
 	files := loadCorpus(b, "benchdata", "st", "iecst", "tcst")

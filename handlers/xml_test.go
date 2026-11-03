@@ -93,11 +93,14 @@ func TestXMLMalformed(t *testing.T) {
 
 // TestXMLLineEnding checks that formatting an XML file keeps the line ending
 // it uses, including the line breaks inserted around a CDATA section. The XML
-// outside the sections is never touched.
+// outside the sections is never touched. The second section has line breaks of
+// its own: the XML decoder turns CRLF into LF in CDATA, so reading the section
+// from the decoder used to write LF lines into a CRLF file.
 func TestXMLLineEnding(t *testing.T) {
 	t.Parallel()
 	lf := "<?xml version=\"1.0\"?>\n<TcPlcObject>\n  <POU Name=\"P\" Id=\"{1}\">\n" +
 		"    <Declaration><![CDATA[TYPE t : STRUCT a : INT; END_STRUCT END_TYPE]]></Declaration>\n" +
+		"    <Implementation>\n      <ST><![CDATA[// step\nx := 1;\nIF x > 0 THEN\ny := 2;\nEND_IF\n]]></ST>\n    </Implementation>\n" +
 		"  </POU>\n</TcPlcObject>\n"
 	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
 

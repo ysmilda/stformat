@@ -482,7 +482,7 @@ namespace format
                     Save(open);
                 }
 
-                byte[] output = await RunAsync(executable, $"-q -stdout \"{filePath}\"", null, name, interactive);
+                byte[] output = await RunAsync(executable, $"-q --stdout \"{filePath}\"", null, name, interactive);
                 if (output is null)
                 {
                     return;
@@ -814,7 +814,7 @@ namespace format
             }
 
             var utf8 = new UTF8Encoding(false);
-            (byte[] output, string error) = await TryRunAsync(executable, "-q -stdin", utf8.GetBytes(text), name);
+            (byte[] output, string error) = await TryRunAsync(executable, "-q --stdin", utf8.GetBytes(text), name);
             return output is null ? (null, error) : (utf8.GetString(output), null);
         }
 

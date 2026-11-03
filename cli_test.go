@@ -51,7 +51,7 @@ func runCLI(t *testing.T, stdin string, args ...string) (string, error) {
 func TestStdoutPrintsEveryFile(t *testing.T) {
 	t.Parallel()
 	paths := writeFiles(t, "a.st", formattedSrc, "b.st", unformattedSrc)
-	out, err := runCLI(t, "", append([]string{"-stdout"}, paths...)...)
+	out, err := runCLI(t, "", append([]string{"--stdout"}, paths...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,14 +59,14 @@ func TestStdoutPrintsEveryFile(t *testing.T) {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 	if got := readFile(t, paths[1]); got != unformattedSrc {
-		t.Errorf("-stdout wrote the file: %q", got)
+		t.Errorf("--stdout wrote the file: %q", got)
 	}
 }
 
 func TestNoWritePrintsEveryFile(t *testing.T) {
 	t.Parallel()
 	paths := writeFiles(t, "a.st", formattedSrc)
-	out, err := runCLI(t, "", "-w=false", paths[0])
+	out, err := runCLI(t, "", "--write=false", paths[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestNoWritePrintsEveryFile(t *testing.T) {
 func TestCheckWithDiff(t *testing.T) {
 	t.Parallel()
 	paths := writeFiles(t, "a.st", formattedSrc, "b.st", unformattedSrc)
-	out, err := runCLI(t, "", append([]string{"-check", "-diff", "-q"}, paths...)...)
+	out, err := runCLI(t, "", append([]string{"--check", "--diff", "-q"}, paths...)...)
 	if !errors.Is(err, errUnformatted) {
 		t.Fatalf("err = %v, want errUnformatted", err)
 	}
@@ -91,18 +91,18 @@ func TestCheckWithDiff(t *testing.T) {
 		t.Errorf("output %q mentions the formatted file", out)
 	}
 	if got := readFile(t, paths[1]); got != unformattedSrc {
-		t.Errorf("-check wrote the file: %q", got)
+		t.Errorf("--check wrote the file: %q", got)
 	}
 }
 
 func TestDiffDoesNotWrite(t *testing.T) {
 	t.Parallel()
 	paths := writeFiles(t, "a.st", unformattedSrc)
-	if _, err := runCLI(t, "", "-diff", paths[0]); err != nil {
+	if _, err := runCLI(t, "", "--diff", paths[0]); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, paths[0]); got != unformattedSrc {
-		t.Errorf("-diff wrote the file: %q", got)
+		t.Errorf("--diff wrote the file: %q", got)
 	}
 }
 
@@ -136,18 +136,18 @@ func TestFailureWritesNothing(t *testing.T) {
 
 func TestStdin(t *testing.T) {
 	t.Parallel()
-	out, err := runCLI(t, "x:=1;", "-stdin")
+	out, err := runCLI(t, "x:=1;", "--stdin")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != formattedSrc {
 		t.Errorf("output = %q, want %q", out, formattedSrc)
 	}
-	if _, err := runCLI(t, "x:=1;", "-stdin", "-check"); !errors.Is(err, errUnformatted) {
-		t.Errorf("-stdin -check err = %v, want errUnformatted", err)
+	if _, err := runCLI(t, "x:=1;", "--stdin", "--check"); !errors.Is(err, errUnformatted) {
+		t.Errorf("--stdin --check err = %v, want errUnformatted", err)
 	}
-	if _, err := runCLI(t, formattedSrc, "-stdin", "-check"); err != nil {
-		t.Errorf("-stdin -check on formatted input: %v", err)
+	if _, err := runCLI(t, formattedSrc, "--stdin", "--check"); err != nil {
+		t.Errorf("--stdin --check on formatted input: %v", err)
 	}
 }
 
@@ -177,17 +177,17 @@ func TestWriteKeepsMode(t *testing.T) {
 func TestExitCode(t *testing.T) {
 	t.Parallel()
 	paths := writeFiles(t, "a.st", unformattedSrc, "bad.TcPOU", "<TcPlcObject><POU>")
-	_, err := runCLI(t, "", "-check", paths[0])
+	_, err := runCLI(t, "", "--check", paths[0])
 	if got := exitCode(err); got != exitUnformatted {
-		t.Errorf("-check on an unformatted file: exit %d, want %d", got, exitUnformatted)
+		t.Errorf("--check on an unformatted file: exit %d, want %d", got, exitUnformatted)
 	}
-	_, err = runCLI(t, "", "-check", paths[1])
+	_, err = runCLI(t, "", "--check", paths[1])
 	if got := exitCode(err); got != exitError {
-		t.Errorf("-check on a broken file: exit %d, want %d", got, exitError)
+		t.Errorf("--check on a broken file: exit %d, want %d", got, exitError)
 	}
-	_, err = runCLI(t, "", "-check", filepath.Join(filepath.Dir(paths[0]), "missing.st"))
+	_, err = runCLI(t, "", "--check", filepath.Join(filepath.Dir(paths[0]), "missing.st"))
 	if got := exitCode(err); got != exitError {
-		t.Errorf("-check on a missing file: exit %d, want %d", got, exitError)
+		t.Errorf("--check on a missing file: exit %d, want %d", got, exitError)
 	}
 	if got := exitCode(nil); got != 0 {
 		t.Errorf("success: exit %d, want 0", got)
@@ -246,7 +246,34 @@ func TestWalkSkips(t *testing.T) {
 		t.Errorf("explicit paths gave %q, want %q", got, want)
 	}
 
-	if _, err := runCLI(t, "", "-exclude", "[", dir); err == nil {
-		t.Error("a malformed -exclude pattern was accepted")
+	if _, err := runCLI(t, "", "--exclude", "[", dir); err == nil {
+		t.Error("a malformed --exclude pattern was accepted")
+	}
+}
+
+func TestVersion(t *testing.T) {
+	t.Parallel()
+	out, err := runCLI(t, "", "--version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "stformat "+version+"\ncommit: ") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+// TestUnknownFlag checks that a flag error is a failed run that points to the
+// help, and that the single-dash long flags of the old command line are
+// rejected rather than read as a bundle of short flags.
+func TestUnknownFlag(t *testing.T) {
+	t.Parallel()
+	for _, arg := range []string{"--bogus", "-check"} {
+		_, err := runCLI(t, "", arg, ".")
+		if err == nil || !strings.Contains(err.Error(), "--help") {
+			t.Errorf("%s: err = %v, want a flag error naming --help", arg, err)
+		}
+		if got := exitCode(err); got != exitError {
+			t.Errorf("%s: exit %d, want %d", arg, got, exitError)
+		}
 	}
 }

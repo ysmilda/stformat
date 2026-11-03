@@ -48,7 +48,7 @@ go test ./handlers -run TestSTFiles/addresses
 
 `TestProjectFormatLossless` in `handlers/project_test.go` formats every
 supported file in an ST/TwinCAT project tree and independently verifies
-(without using the internal lexer) that only whitespace and character case
+(without using the lexer) that only whitespace and character case
 changed. It runs on the sample project in `handlers/benchdata` by default;
 point it at a real project with `STFORMAT_PROJECT_DIR`:
 
@@ -71,13 +71,20 @@ equal, so any removed/added/reordered content fails the test.
 | Directory      | Purpose                                                                 |
 | -------------- | ----------------------------------------------------------------------- |
 | `formatter/`   | Formats the token stream: indentation, spacing, line wrap, comment and directive handling |
-| `handlers/`    | File-type handlers: `STHandler` (plain ST) and `XMLHandler` (TwinCAT XML wrapping ST in CDATA) |
+| `handlers/`    | File-type handlers: `STHandler` (plain ST) and `XMLHandler` (TwinCAT XML wrapping ST in CDATA); `Blocks` returns the ST of a file with its offset |
 | `handlers/testdata/` | Golden test inputs (`*.in.*`) and expected outputs (`*.golden.*`) |
-| `internal/lexer/` | Tokenizer shared by the formatter and tests                          |
+| `pkg/lexer/`   | Tokenizer shared by the formatter and tests; public API         |
 | `extension/format/` | Visual Studio extension for VS 2022+ and the 64-bit TwinCAT XAE Shell (4026) |
 | `extension/format15/` | The same sources (linked from `format/`) built for VS 2017/2019 and the 32-bit XAE Shell (4024); keep its manifest `Identity` equal to `format/` |
 
-Entry point is `main.go`: `run(args, stdin, stdout, stderr)` parses flags, expands file paths, formats every file concurrently and only then writes; `cli_test.go` drives it directly. Exit codes: 1 means `-check` found unformatted files, 2 means an error (`exitCode`). Directory walks skip hidden and generated directories and `-exclude` patterns (`skipped`). `diff.go` writes `-diff` as a unified diff.
+`pkg/lexer` and `handlers` (`Registry`, `Handler.Blocks`) are public API: the
+linter `stlint` (a separate, private project checked out next to this one at
+`../stlint`) imports them through a `replace` directive. Changing their exported
+names or behaviour can break it; run `task default` there after such a change.
+
+The command line is built with Cobra (`github.com/spf13/cobra`, flags from `pflag`): `newRootCmd` in `main.go` defines the flags. Long flags take two dashes (`--check`), one-letter forms one (`-q`, `-w`).
+
+Entry point is `main.go`: `run(args, stdin, stdout, stderr)` executes the Cobra command, which parses flags, expands file paths, formats every file concurrently and only then writes; `cli_test.go` drives it directly. Exit codes: 1 means `--check` found unformatted files, 2 means an error (`exitCode`). Directory walks skip hidden and generated directories and `--exclude` patterns (`skipped`). `diff.go` writes `--diff` as a unified diff.
 
 Formatting is a single token pass (`formatter.go`, no AST) that writes each statement on one line and records which token each piece of the line is. When a line ends, `layout.go` lays it out from those tokens: bracketed lists and operator chains break when the line is over 120 columns (tab = 4) or when the source broke them at one of their break points. The rules, and the policy for user line breaks, are in the comment at the top of `layout.go`. No pass re-reads the output text, so strings, comments, pragmas and ignored regions never need special-casing.
 

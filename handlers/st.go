@@ -17,3 +17,8 @@ func (h *STHandler) Format(contents []byte) ([]byte, error) {
 	}
 	return []byte(formatted), nil
 }
+
+// Blocks returns the whole file as a single block.
+func (h *STHandler) Blocks(contents []byte) ([]Block, error) {
+	return []Block{{Text: string(contents), end: len(contents)}}, nil
+}

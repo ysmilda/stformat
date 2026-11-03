@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ysmilda/stformat/internal/lexer"
+	"github.com/ysmilda/stformat/pkg/lexer"
 )
 
 // The token pass writes every statement on one line. When a line ends, the

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/spf13/cobra"
 
 	"github.com/ysmilda/stformat/formatter"
 	"github.com/ysmilda/stformat/handlers"
@@ -24,7 +25,7 @@ var (
 	date    = "unknown"
 )
 
-// errUnformatted is returned by run when -check finds input that is not
+// errUnformatted is returned by run when --check finds input that is not
 // formatted. The offending files have already been listed, so main only turns
 // it into the exit code.
 var errUnformatted = errors.New("input is not formatted")
@@ -32,7 +33,7 @@ var errUnformatted = errors.New("input is not formatted")
 // Exit codes. A script can tell input that needs formatting apart from a run
 // that failed: only exitUnformatted means every file was read and formatted.
 const (
-	exitUnformatted = 1 // -check found input that is not formatted
+	exitUnformatted = 1 // --check found input that is not formatted
 	exitError       = 2 // a file could not be read, parsed or formatted
 )
 
@@ -65,59 +66,60 @@ type options struct {
 	exclude []string
 }
 
+// run executes the command line args and returns the error that decides the
+// exit code.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	var opts options
-	fset := flag.NewFlagSet("stformat", flag.ContinueOnError)
-	fset.SetOutput(stderr)
-	fset.BoolVar(&opts.check, "check", false, "List files that are not formatted and exit 1 if there are any")
-	fset.BoolVar(&opts.diff, "diff", false, "Print a diff for files that are not formatted instead of writing them")
-	fset.BoolVar(&opts.write, "w", true, "Write formatted output back to the files")
-	fset.BoolVar(&opts.stdin, "stdin", false, "Read source from stdin (ST only) and write the result to stdout")
-	fset.BoolVar(&opts.stdout, "stdout", false, "Write formatted output to stdout instead of to the files")
-	fset.BoolVar(&opts.quiet, "q", false, "Suppress informational output")
-	fset.Func("exclude", "Skip files and directories whose name matches this pattern while walking a directory (repeatable, e.g. -exclude '*_old.st')", func(pattern string) error {
-		if _, err := filepath.Match(pattern, ""); err != nil {
-			return fmt.Errorf("bad pattern %q: %w", pattern, err)
-		}
-		opts.exclude = append(opts.exclude, pattern)
-		return nil
-	})
-	versionFlag := fset.Bool("version", false, "Print version and exit")
-	fset.Usage = func() {
-		_, _ = fmt.Fprintf(fset.Output(), `stformat - Structured Text formatter
+	root := newRootCmd()
+	root.SetArgs(args)
+	root.SetIn(stdin)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	return root.Execute()
+}
 
-Usage:
-  stformat [flags] [path...]
+// newRootCmd builds the stformat command.
+func newRootCmd() *cobra.Command {
+	var opts options
+	cmd := &cobra.Command{
+		Use:   "stformat [flags] [path...]",
+		Short: "Structured Text formatter",
+		Long: `stformat - Structured Text formatter
 
 Formats plain ST (.st, .iecst, .tcst) and the ST inside TwinCAT XML
-(.TcPOU, .TcGVL, .TcDUT, .TcIO). Directories are searched recursively.
+(.TcPOU, .TcGVL, .TcDUT, .TcIO). Directories are searched recursively.`,
+		Version: version,
+		Args:    cobra.ArbitraryArgs,
+		// Errors are printed by main, and a failed run is not a usage error.
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, paths []string) error {
+			if err := checkPatterns(opts.exclude); err != nil {
+				return err
+			}
+			if opts.stdin {
+				return runStdin(opts, cmd.InOrStdin(), cmd.OutOrStdout())
+			}
+			if len(paths) == 0 {
+				return cmd.Help()
+			}
+			return runFiles(opts, paths, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	cmd.SetVersionTemplate(fmt.Sprintf("stformat {{.Version}}\ncommit: %s\nbuilt:  %s\n", commit, date))
+	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w\nRun '%s --help' for usage", err, cmd.CommandPath())
+	})
 
-Flags:
-`)
-		fset.PrintDefaults()
-	}
-	if err := fset.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return err
-	}
-
-	if *versionFlag {
-		_, err := fmt.Fprintf(stdout, "stformat %s\ncommit: %s\nbuilt:  %s\n", version, commit, date)
-		return err
-	}
-
-	if opts.stdin {
-		return runStdin(opts, stdin, stdout)
-	}
-
-	paths := fset.Args()
-	if len(paths) == 0 {
-		fset.Usage()
-		return nil
-	}
-	return runFiles(opts, paths, stdout, stderr)
+	flags := cmd.Flags()
+	flags.SortFlags = false
+	flags.BoolVar(&opts.check, "check", false, "List files that are not formatted and exit 1 if there are any")
+	flags.BoolVar(&opts.diff, "diff", false, "Print a diff for files that are not formatted instead of writing them")
+	flags.BoolVarP(&opts.write, "write", "w", true, "Write formatted output back to the files")
+	flags.BoolVar(&opts.stdin, "stdin", false, "Read source from stdin (ST only) and write the result to stdout")
+	flags.BoolVar(&opts.stdout, "stdout", false, "Write formatted output to stdout instead of to the files")
+	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "Suppress informational output")
+	flags.StringArrayVar(&opts.exclude, "exclude", nil, "Skip files and directories whose name matches `pattern` while walking a directory (repeatable, e.g. --exclude '*_old.st')")
+	return cmd
 }
 
 // runStdin formats standard input. The input is fed through formatter.Copy so
@@ -146,6 +148,16 @@ func runStdin(opts options, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 		return errUnformatted
+	}
+	return nil
+}
+
+// checkPatterns reports the first malformed --exclude pattern.
+func checkPatterns(patterns []string) error {
+	for _, pattern := range patterns {
+		if _, err := filepath.Match(pattern, ""); err != nil {
+			return fmt.Errorf("bad pattern %q: %w", pattern, err)
+		}
 	}
 	return nil
 }

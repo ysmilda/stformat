@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/ysmilda/stformat/formatter"
-	"github.com/ysmilda/stformat/internal/lexer"
+	"github.com/ysmilda/stformat/pkg/lexer"
 )
 
 // XMLHandler formats TwinCAT XML files that embed Structured Text
@@ -33,10 +33,47 @@ type xmlEdit struct {
 // Format parses the XML, formats ST inside <Declaration> and <ST> CDATA
 // sections, and returns the result with all untouched bytes unchanged.
 func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
+	blocks, err := h.Blocks(contents)
+	if err != nil {
+		return nil, err
+	}
+	var edits []xmlEdit
+	for _, b := range blocks {
+		raw := b.Text
+		inner := strings.TrimSpace(raw)
+		// Follow the line ending of the block, or of the rest of the file
+		// when the block is a single line and has none of its own. The XML
+		// around it is never touched.
+		ending := formatter.LineEnding(raw)
+		if !strings.Contains(raw, "\n") {
+			ending = formatter.LineEnding(string(contents))
+		}
+		formatted, err := formatter.FormatWith(inner, ending)
+		if err != nil {
+			return nil, inFile(err, contents, b.Offset+strings.Index(raw, inner))
+		}
+		// Declaration/implementation content starts and ends with a line
+		// break so git diffs are per-line readable.
+		wrapped := ending + strings.TrimRight(formatted, "\r\n") + ending
+		if wrapped != raw {
+			edits = append(edits, xmlEdit{
+				start: b.start,
+				end:   b.end,
+				repl:  []byte("<![CDATA[" + wrapped + "]]>"),
+			})
+		}
+	}
+	return applyEdits(contents, edits), nil
+}
+
+// Blocks returns the Structured Text held in the <![CDATA[...]]> sections of
+// <Declaration> and <ST> elements. Empty sections and sections that do not
+// look like ST are left out.
+func (h *XMLHandler) Blocks(contents []byte) ([]Block, error) {
 	dec := xml.NewDecoder(bytes.NewReader(contents))
 
 	var stack []string
-	var edits []xmlEdit
+	var blocks []Block
 
 	tokStart := int64(0)
 	for {
@@ -58,38 +95,24 @@ func (h *XMLHandler) Format(contents []byte) ([]byte, error) {
 			}
 		case xml.CharData:
 			if isSTBlock(stack) && isCDATA(contents, tokStart, tokEnd) {
-				raw := string(t)
-				inner := strings.TrimSpace(raw)
-				if len(inner) > 0 && looksLikeST(inner) {
-					// Follow the line ending of the block, or of the rest of
-					// the file when the block is a single line and has none of
-					// its own. The XML around it is never touched.
-					ending := formatter.LineEnding(raw)
-					if !strings.Contains(raw, "\n") {
-						ending = formatter.LineEnding(string(contents))
-					}
-					formatted, err := formatter.FormatWith(inner, ending)
-					if err != nil {
-						start := int(tokStart) + len("<![CDATA[") + strings.Index(raw, inner)
-						return nil, inFile(err, contents, start)
-					}
-					// Declaration/implementation content starts and ends
-					// with a line break so git diffs are per-line readable.
-					wrapped := ending + strings.TrimRight(formatted, "\r\n") + ending
-					if wrapped != raw {
-						edits = append(edits, xmlEdit{
-							start: int(tokStart),
-							end:   int(tokEnd),
-							repl:  []byte("<![CDATA[" + wrapped + "]]>"),
-						})
-					}
+				// The text is taken from the file rather than from t: the
+				// decoder turns every CRLF into LF, which would lose the
+				// line ending of the block and shift every offset after a
+				// line break.
+				raw := string(contents[int(tokStart)+len("<![CDATA[") : int(tokEnd)-len("]]>")])
+				if inner := strings.TrimSpace(raw); len(inner) > 0 && looksLikeST(inner) {
+					blocks = append(blocks, Block{
+						Text:   raw,
+						Offset: int(tokStart) + len("<![CDATA["),
+						start:  int(tokStart),
+						end:    int(tokEnd),
+					})
 				}
 			}
 		}
 		tokStart = tokEnd
 	}
-
-	return applyEdits(contents, edits), nil
+	return blocks, nil
 }
 
 // inFile turns the line of a syntax error in an ST block, counted within the
@@ -114,12 +137,13 @@ func isSTBlock(stack []string) bool {
 	return top == "Declaration" || top == "ST"
 }
 
-// isCDATA reports whether the token byte range in src starts a CDATA section.
+// isCDATA reports whether the token byte range in src is a whole CDATA section.
 func isCDATA(src []byte, from, to int64) bool {
 	if from < 0 || from >= to || int(to) > len(src) {
 		return false
 	}
-	return bytes.HasPrefix(src[from:to], []byte("<![CDATA["))
+	tok := src[from:to]
+	return len(tok) >= len("<![CDATA[]]>") && bytes.HasPrefix(tok, []byte("<![CDATA[")) && bytes.HasSuffix(tok, []byte("]]>"))
 }
 
 // stStartKeywords are the keywords that a Structured Text section can begin
