@@ -20,8 +20,8 @@ Three workflows in `.github/workflows/`:
 | Workflow      | Trigger                                              | Contents                                                 |
 | ------------- | ---------------------------------------------------- | -------------------------------------------------------- |
 | `ci.yml`      | every push/PR, no path filter                        | build, vet, `go mod tidy -diff`, tests + coverage, lint   |
-| `extension.yml` | paths: `extension/**`, `**/*.go`, `go.mod`, `go.sum` | VSIX build on windows-latest, uploads `stformat-ci.vsix`  |
-| `release.yml` | `v*` tags                                            | goreleaser release + VSIX                                 |
+| `extension.yml` | paths: `extension/**`, `**/*.go`, `go.mod`, `go.sum` | builds both VSIXs (`format`, `format15`) on windows-latest |
+| `release.yml` | `v*` tags                                            | goreleaser release + both VSIXs                           |
 
 `ci.yml` deliberately has no `paths` filter. A path-filtered workflow that is a
 required status check never reports on PRs that do not touch those files, and
@@ -29,10 +29,11 @@ GitHub blocks the merge on a check that is still "Expected". Only add path
 filters to workflows whose jobs are not required.
 
 `extension.yml` watches the Go sources as well as `extension/**`, because
-`format.csproj` builds `Resources/stformat.exe` from them in a
-`BeforeTargets="PrepareForBuild"` step. A Go change can therefore break the VSIX
-build. To build the extension locally, run the msbuild commands from
-`extension.yml` against `extension\format\format.csproj`.
+both VSIX projects build `extension/format/Resources/stformat.exe` from them in
+a `BeforeTargets="PrepareForBuild"` step. A Go change can therefore break the
+VSIX build. To build the extension locally, run the msbuild commands from
+`extension.yml` against `extension\format\format.csproj` and
+`extension\format15\format15.csproj`.
 
 Every workflow takes its Go version from `go.mod` (`go-version-file`), so
 bumping the `go` line in `go.mod` is the only change needed.
@@ -73,6 +74,8 @@ equal, so any removed/added/reordered content fails the test.
 | `handlers/`    | File-type handlers: `STHandler` (plain ST) and `XMLHandler` (TwinCAT XML wrapping ST in CDATA) |
 | `handlers/testdata/` | Golden test inputs (`*.in.*`) and expected outputs (`*.golden.*`) |
 | `internal/lexer/` | Tokenizer shared by the formatter and tests                          |
+| `extension/format/` | Visual Studio extension for VS 2022+ and the 64-bit TwinCAT XAE Shell (4026) |
+| `extension/format15/` | The same sources (linked from `format/`) built for VS 2017/2019 and the 32-bit XAE Shell (4024); keep its manifest `Identity` equal to `format/` |
 
 Entry point is `main.go`: `run(args, stdin, stdout, stderr)` parses flags, expands file paths, formats every file concurrently and only then writes; `cli_test.go` drives it directly. Exit codes: 1 means `-check` found unformatted files, 2 means an error (`exitCode`). Directory walks skip hidden and generated directories and `-exclude` patterns (`skipped`). `diff.go` writes `-diff` as a unified diff.
 

@@ -1,12 +1,21 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using EnvDTE;
 using Microsoft.VisualStudio;
+using Microsoft.VisualStudio.ComponentModelHost;
+using Microsoft.VisualStudio.Editor;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Text;
+using Microsoft.VisualStudio.Text.Editor;
+using Microsoft.VisualStudio.Text.Operations;
+using Microsoft.VisualStudio.TextManager.Interop;
 using TCatSysManagerLib;
 
 namespace format
@@ -14,11 +23,16 @@ namespace format
     [Command("{030fb4a7-a21d-4b36-a28d-ffc41b84fbfc}", 0x0100)]
     internal sealed class Format : BaseCommand<Format>
     {
-        private static readonly string[] SupportedExtensions =
-        {
-            ".st", ".iecst", ".tcst",
-            ".tcpou", ".tcgvl", ".tcdut", ".tcio",
-        };
+        // TwinCAT names the document of part of a PLC object after its file,
+        // followed by "@method" (Visual Studio 2022, XAE Shell 4026) or by
+        // ";Object\Folder\method" (XAE Shell 4024). This matches the file part.
+        private static readonly Regex ObjectMoniker = new Regex(
+            @"^(.*?\.(?:st|iecst|tcst|tcpou|tcgvl|tcdut|tcio))(?=[@;]|$)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        // stformat formats a file in milliseconds. A run that takes this long
+        // is stuck and is killed so the document is left alone.
+        private const int TimeoutMilliseconds = 30000;
 
         protected override async Task ExecuteAsync(OleMenuCmdEventArgs e)
         {
@@ -27,27 +41,21 @@ namespace format
             string executable = FindExecutable();
             if (executable is null)
             {
-                Log.Error("stformat.exe not found");
-                await VS.MessageBox.ShowErrorAsync(
-                    "Format",
-                    "Could not find stformat.exe. Install it (for example with " +
-                    "'winget install --id Ysmilda.stformat -e') or place stformat.exe next to this extension.");
+                await ShowMissingExecutableAsync();
                 return;
             }
 
             Log.Info($"Using stformat: {executable}");
 
             // TwinCAT PLC objects (POUs and their methods/actions, GVLs, DUTs,
-            // interfaces) expose an automation model. The active document
-            // moniker of a method carries a "@method" suffix, so the automation
-            // object is used instead of the file path. Updating the object
+            // interfaces) may expose an automation model. Updating the object
             // keeps the change inside the environment, so the TwinCAT editor
             // does not report the file as modified externally.
             DTE dte = GetDTE();
-            if (TryGetPlcObject(dte, out ITcPlcDeclaration declaration, out ITcPlcImplementation implementation))
+            if (TryGetActivePlcObject(dte, out Document document, out ITcPlcDeclaration declaration, out ITcPlcImplementation implementation))
             {
                 Log.Info("Formatting TwinCAT PLC object in place");
-                await GuardAsync(() => FormatPlcObjectAsync(executable, dte, declaration, implementation));
+                await GuardAsync(document?.FullName, () => FormatPlcObjectAsync(executable, document, declaration, implementation, interactive: true));
                 return;
             }
 
@@ -56,8 +64,8 @@ namespace format
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
             string framePath = GetActiveDocumentPath();
 
-            string filePath = PickSupportedDocument(view?.FilePath, framePath);
-            if (filePath is null)
+            string moniker = PickSupportedDocument(view?.FilePath, framePath);
+            if (moniker is null)
             {
                 Log.Warning("No supported active document found to format");
                 string detail = string.Empty;
@@ -76,111 +84,514 @@ namespace format
                 return;
             }
 
-            // Persist any pending edits so the file on disk matches the editor.
-            // The text view has no document for custom editors, so fall back to
-            // the shell's Save command for those.
-            if (view?.Document is not null && IsSamePath(view.FilePath, filePath))
-            {
-                view.Document.Save();
-            }
-            else
-            {
-                await VS.Commands.ExecuteAsync("File.SaveSelectedItems");
-            }
+            Log.Info($"Formatting {moniker}");
+            await GuardAsync(moniker, () => FormatDocumentAsync(executable, moniker, interactive: true));
+        }
 
-            int exitCode;
-            string output;
-            try
+        internal static async Task ShowMissingExecutableAsync()
+        {
+            Log.Error("stformat.exe not found");
+            await VS.MessageBox.ShowErrorAsync(
+                "Format",
+                "Could not find stformat.exe. Install it (for example with " +
+                "'winget install --id Ysmilda.stformat -e') or place stformat.exe next to this extension.");
+        }
+
+        // Formats an open document: through the TwinCAT automation object
+        // when it has one, otherwise in its text buffer.
+        internal static async Task FormatDocumentAsync(string executable, string moniker, bool interactive)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            DTE dte = GetDTE();
+            if (TryGetPlcObject(dte, moniker, out Document document, out ITcPlcDeclaration declaration, out ITcPlcImplementation implementation))
             {
-                (exitCode, output) = await RunAsync(executable, filePath);
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"Failed to run stformat for {filePath}: {ex}");
-                await VS.MessageBox.ShowErrorAsync("Format", $"Failed to run stformat: {ex.Message}");
+                Log.Info($"TwinCAT PLC object: {moniker}");
+                await FormatPlcObjectAsync(executable, document, declaration, implementation, interactive);
                 return;
             }
 
-            if (exitCode != 0)
+            OpenBuffer open = FindOpenBuffer(moniker);
+            if (open is null)
             {
-                string message = string.IsNullOrEmpty(output)
-                    ? "stformat exited with a non-zero exit code."
-                    : output;
-                Log.Error($"stformat exited with code {exitCode} for {filePath}");
-                await VS.MessageBox.ShowErrorAsync("Format", $"stformat failed:{Environment.NewLine}{message}");
+                Log.Warning($"No text buffer or TwinCAT object for {moniker}");
+                if (interactive)
+                {
+                    await VS.MessageBox.ShowWarningAsync(
+                        "Format",
+                        $"{DisplayName(moniker)} is not open in a text editor or a TwinCAT editor, so it cannot be formatted here.");
+                }
                 return;
             }
 
-            Log.Info($"stformat completed for {filePath}");
-
-            // Reflect the formatted content in the open editor. Custom editors
-            // (for example TwinCAT) don't expose a text document view for the
-            // project file, so reload those by reopening the document.
-            if (view?.Document is not null && IsSamePath(view.FilePath, filePath))
-            {
-                view.Document.Reload();
-            }
-            else
-            {
-                await ReloadDocumentAsync(filePath);
-            }
+            await FormatBufferAsync(executable, open, interactive);
         }
 
         // Formats a TwinCAT PLC object through the automation interface so the
         // change is applied to the open document instead of the file on disk.
+        // The document is only saved again when formatting changed it.
         private static async Task FormatPlcObjectAsync(
             string executable,
-            DTE dte,
+            Document document,
             ITcPlcDeclaration declaration,
-            ITcPlcImplementation implementation)
+            ITcPlcImplementation implementation,
+            bool interactive)
         {
-            // Persist pending edits first so the automation model is current.
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-            TrySave(dte);
 
+            // Persist pending edits first so the automation model is current.
+            // A document that was just saved is current already.
+            if (interactive)
+            {
+                TrySave(document);
+            }
+
+            string name = document?.Name ?? "PLC object";
+
+            // Both parts are read and formatted before either is written:
+            // with the editor open, writing one part can make TwinCAT write
+            // its editor's copy of the other part back.
+            var parts = new List<PlcPart>();
             if (declaration is not null)
             {
-                string original = declaration.DeclarationText;
-                string formatted = await FormatTextAsync(executable, original);
-                if (formatted is null)
-                {
-                    return;
-                }
-
-                formatted = WrapText(formatted);
-                if (Differs(formatted, original))
-                {
-                    Log.Info("PLC object declaration reformatted");
-                    declaration.DeclarationText = formatted;
-                }
+                parts.Add(new PlcPart(
+                    "declaration",
+                    () =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        return declaration.DeclarationText;
+                    },
+                    text =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        declaration.DeclarationText = text;
+                    }));
             }
 
             // Only Structured Text implementations can be formatted; other
             // languages (FBD, LD, ...) are left untouched.
             if (implementation is not null && IsStructuredText(implementation))
             {
-                string original = implementation.ImplementationText;
-                string formatted = await FormatTextAsync(executable, original);
-                if (formatted is null)
+                parts.Add(new PlcPart(
+                    "implementation",
+                    () =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        return implementation.ImplementationText;
+                    },
+                    text =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        implementation.ImplementationText = text;
+                    }));
+            }
+
+            foreach (PlcPart part in parts)
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                part.Original = part.Get();
+                part.Formatted = await FormatTextAsync(executable, part.Original, name, interactive);
+                if (part.Formatted is null)
                 {
                     return;
-                }
-
-                formatted = WrapText(formatted);
-                if (Differs(formatted, original))
-                {
-                    Log.Info("PLC object implementation reformatted");
-                    implementation.ImplementationText = formatted;
                 }
             }
 
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-            TrySave(dte);
+            bool changed = false;
+            foreach (PlcPart part in parts)
+            {
+                changed |= ApplyPlcPart(name, part.Kind, part.Original, part.Formatted, part.Set);
+            }
+
+            // TwinCAT can still write a stale editor copy back after the
+            // write; check once it has caught up and write again what it lost.
+            for (int round = 1; changed && round <= MaxReapplyRounds; round++)
+            {
+                await Task.Delay(ReapplyDelayMilliseconds);
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+                bool reverted = false;
+                foreach (PlcPart part in parts)
+                {
+                    string current = part.Get();
+                    if (Differs(WrapText(part.Formatted, part.Original), current))
+                    {
+                        Log.Warning($"{name}: {part.Kind} was reverted by TwinCAT, writing it again (round {round})");
+                        ApplyPlcPart(name, part.Kind, current, part.Formatted, part.Set);
+                        reverted = true;
+                    }
+                }
+
+                if (!reverted)
+                {
+                    break;
+                }
+            }
+
+            if (changed)
+            {
+                TrySave(document);
+            }
+            else
+            {
+                Log.Info($"No formatting changes for {name}");
+            }
         }
 
-        // Guards against re-entrancy: formatting saves the document, which
-        // raises the save event again.
-        private static bool _formatting;
+        // How often, and how long after a write, the parts of a PLC object are
+        // checked for being reverted by TwinCAT.
+        private const int MaxReapplyRounds = 3;
+        private const int ReapplyDelayMilliseconds = 150;
+
+        // The declaration or the implementation of a PLC object.
+        private sealed class PlcPart
+        {
+            public PlcPart(string kind, Func<string> get, Action<string> set)
+            {
+                Kind = kind;
+                Get = get;
+                Set = set;
+            }
+
+            public string Kind { get; }
+            public Func<string> Get { get; }
+            public Action<string> Set { get; }
+            public string Original { get; set; }
+            public string Formatted { get; set; }
+        }
+
+        // Applies the formatted text of one part (declaration or
+        // implementation) of a PLC object and reports whether it changed.
+        // When the part is open in an editor, its buffer is edited, so Undo
+        // reverts the formatting in one step; setting the automation property
+        // replaces the text without an undo step. Must run on the UI thread.
+        internal static bool ApplyPlcPart(string name, string part, string original, string formatted, Action<string> setText)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            string wrapped = WrapText(formatted, original);
+            if (!Differs(wrapped, original))
+            {
+                return false;
+            }
+
+            if (TryFindPartBuffer(original, out ITextBuffer buffer, out ITextView view))
+            {
+                string current = buffer.CurrentSnapshot.GetText();
+                ReplaceText(buffer, view, current, Reshape(formatted, current));
+                Log.Info($"{name}: {part} reformatted in its editor");
+                return true;
+            }
+
+            setText(wrapped);
+            Log.Info($"{name}: {part} reformatted through the automation interface");
+            return true;
+        }
+
+        // Finds the one open editor buffer that holds text. TwinCAT editors
+        // show the declaration and the implementation in separate text views;
+        // which object a view belongs to is not exposed, so a buffer is only
+        // used when its text identifies it.
+        private static bool TryFindPartBuffer(string text, out ITextBuffer buffer, out ITextView view)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            buffer = null;
+            view = null;
+            string wanted = Normalize(text);
+            if (string.IsNullOrWhiteSpace(wanted))
+            {
+                // Every empty part looks alike.
+                return false;
+            }
+
+            foreach (IWpfTextView candidate in TextViewTracker.OpenViews)
+            {
+                ITextBuffer documentBuffer = candidate.TextDataModel.DocumentBuffer;
+                if (documentBuffer == buffer || Normalize(documentBuffer.CurrentSnapshot.GetText()) != wanted)
+                {
+                    continue;
+                }
+
+                if (buffer is not null)
+                {
+                    // Two buffers hold the same text; don't guess.
+                    buffer = null;
+                    view = null;
+                    return false;
+                }
+
+                buffer = documentBuffer;
+                view = candidate;
+            }
+
+            return buffer is not null;
+        }
+
+        // Gives formatted text the leading and trailing line breaks and the
+        // line ending of shape, the text it replaces.
+        private static string Reshape(string formatted, string shape)
+        {
+            string ending = shape.Contains("\r\n") ? "\r\n" : shape.Contains("\n") ? "\n" : "\r\n";
+
+            int lead = 0;
+            while (lead < shape.Length && (shape[lead] == '\r' || shape[lead] == '\n'))
+            {
+                lead++;
+            }
+
+            int trail = shape.Length;
+            while (trail > lead && (shape[trail - 1] == '\r' || shape[trail - 1] == '\n'))
+            {
+                trail--;
+            }
+
+            string body = formatted.Trim('\r', '\n').Replace("\r\n", "\n");
+            if (ending != "\n")
+            {
+                body = body.Replace("\n", ending);
+            }
+
+            return shape.Substring(0, lead) + body + shape.Substring(trail);
+        }
+
+        // An open document's text buffer, found through the running document
+        // table. The XAE Shell 4024 keeps a POU method in a text buffer whose
+        // moniker is not a file, so the editor's document lookup misses it.
+        private sealed class OpenBuffer
+        {
+            public string Moniker;
+            public ITextBuffer Buffer;
+            public ITextView View;
+            public ITextDocument Document;
+            public IVsHierarchy Hierarchy;
+            public uint ItemId;
+            public uint Cookie;
+        }
+
+        private static OpenBuffer FindOpenBuffer(string moniker)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var rdt = (IVsRunningDocumentTable)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(SVsRunningDocumentTable));
+            var componentModel = (IComponentModel)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(SComponentModel));
+            IVsEditorAdaptersFactoryService adapters = componentModel?.GetService<IVsEditorAdaptersFactoryService>();
+            if (rdt is null || adapters is null)
+            {
+                return null;
+            }
+
+            IntPtr docData = IntPtr.Zero;
+            try
+            {
+                if (rdt.FindAndLockDocument((uint)_VSRDTFLAGS.RDT_NoLock, moniker, out IVsHierarchy hierarchy, out uint itemId, out docData, out uint cookie) != VSConstants.S_OK ||
+                    docData == IntPtr.Zero)
+                {
+                    return null;
+                }
+
+                object data = Marshal.GetObjectForIUnknown(docData);
+                IVsTextBuffer vsBuffer = data as IVsTextBuffer;
+                if (vsBuffer is null && data is IVsTextBufferProvider provider && provider.GetTextBuffer(out IVsTextLines lines) == VSConstants.S_OK)
+                {
+                    vsBuffer = lines;
+                }
+
+                ITextBuffer buffer = vsBuffer is null ? null : adapters.GetDocumentBuffer(vsBuffer);
+                if (buffer is null)
+                {
+                    Log.Info($"Document data of {moniker} is not a text buffer");
+                    return null;
+                }
+
+                buffer.Properties.TryGetProperty(typeof(ITextDocument), out ITextDocument document);
+                return new OpenBuffer
+                {
+                    Moniker = moniker,
+                    Buffer = buffer,
+                    View = FindActiveView(adapters, buffer),
+                    Document = document,
+                    Hierarchy = hierarchy,
+                    ItemId = itemId,
+                    Cookie = cookie,
+                };
+            }
+            finally
+            {
+                if (docData != IntPtr.Zero)
+                {
+                    Marshal.Release(docData);
+                }
+            }
+        }
+
+        // Returns the active text view when it shows buffer, so the caret can
+        // be kept in place; null otherwise.
+        private static ITextView FindActiveView(IVsEditorAdaptersFactoryService adapters, ITextBuffer buffer)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var textManager = (IVsTextManager)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(SVsTextManager));
+            if (textManager is null || textManager.GetActiveView(1, null, out IVsTextView active) != VSConstants.S_OK || active is null)
+            {
+                return null;
+            }
+
+            IWpfTextView view = adapters.GetWpfTextView(active);
+            return view is not null && (view.TextBuffer == buffer || view.TextDataModel.DocumentBuffer == buffer) ? view : null;
+        }
+
+        private static void Save(OpenBuffer open)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var rdt = (IVsRunningDocumentTable)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(SVsRunningDocumentTable));
+            int hr = rdt?.SaveDocuments((uint)__VSRDTSAVEOPTIONS.RDTSAVEOPT_SaveIfDirty, open.Hierarchy, open.ItemId, open.Cookie) ?? VSConstants.E_FAIL;
+            if (hr != VSConstants.S_OK)
+            {
+                Log.Warning($"Saving {open.Moniker} failed (hr 0x{hr:X8})");
+            }
+        }
+
+        // Formats a document in its text buffer, so the editor never sees the
+        // file change underneath it, the caret stays on its line and the
+        // change is a single undo step. ST is formatted through stdin; TwinCAT
+        // XML open as text is formatted from its file.
+        private static async Task FormatBufferAsync(string executable, OpenBuffer open, bool interactive)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            ITextBuffer buffer = open.Buffer;
+            string name = DisplayName(open.Moniker);
+            string original = buffer.CurrentSnapshot.GetText();
+
+            string formatted;
+            if (original.TrimStart().StartsWith("<", StringComparison.Ordinal))
+            {
+                string filePath = open.Document?.FilePath;
+                if (!IsSupported(filePath) || !File.Exists(filePath))
+                {
+                    Log.Info($"{name} holds XML but is not a TwinCAT file; skipped");
+                    return;
+                }
+
+                // The XML is read from disk, so the file must match the buffer.
+                if (open.Document.IsDirty)
+                {
+                    Save(open);
+                }
+
+                byte[] output = await RunAsync(executable, $"-q -stdout \"{filePath}\"", null, name, interactive);
+                if (output is null)
+                {
+                    return;
+                }
+
+                formatted = Decode(output, open.Document.Encoding);
+            }
+            else
+            {
+                formatted = await FormatTextAsync(executable, original, name, interactive);
+                if (formatted is null)
+                {
+                    return;
+                }
+            }
+
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            // The buffer may have been edited while stformat ran; the result
+            // belongs to the old text and is dropped.
+            if (buffer.CurrentSnapshot.GetText() != original)
+            {
+                Log.Warning($"{name} changed while formatting; result dropped");
+                return;
+            }
+
+            if (formatted == original)
+            {
+                Log.Info($"No formatting changes for {name}");
+                return;
+            }
+
+            ReplaceText(buffer, open.View, original, formatted);
+            Save(open);
+            Log.Info($"{name} formatted in its buffer");
+        }
+
+        // Replaces only the part of the buffer that changed and keeps the caret
+        // on the line it was on.
+        private static void ReplaceText(ITextBuffer buffer, ITextView view, string original, string formatted)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            int start = 0;
+            int limit = Math.Min(original.Length, formatted.Length);
+            while (start < limit && original[start] == formatted[start])
+            {
+                start++;
+            }
+
+            int originalEnd = original.Length;
+            int formattedEnd = formatted.Length;
+            while (originalEnd > start && formattedEnd > start && original[originalEnd - 1] == formatted[formattedEnd - 1])
+            {
+                originalEnd--;
+                formattedEnd--;
+            }
+
+            int caretLine = -1;
+            int caretColumn = 0;
+            if (view is not null)
+            {
+                SnapshotPoint caret = view.Caret.Position.BufferPosition;
+                ITextSnapshotLine line = caret.GetContainingLine();
+                caretLine = line.LineNumber;
+                caretColumn = caret.Position - line.Start.Position;
+            }
+
+            // One named transaction, so a single Undo reverts the formatting.
+            ITextUndoTransaction transaction = GetUndoHistory(buffer)?.CreateTransaction("Format Structured Text");
+            try
+            {
+                using (ITextEdit edit = buffer.CreateEdit())
+                {
+                    edit.Replace(start, originalEnd - start, formatted.Substring(start, formattedEnd - start));
+                    edit.Apply();
+                }
+
+                transaction?.Complete();
+            }
+            finally
+            {
+                transaction?.Dispose();
+            }
+
+            if (caretLine >= 0)
+            {
+                // The caret lives in the view's buffer, which can be a
+                // projection of the document buffer that was edited.
+                ITextSnapshot snapshot = view.TextBuffer.CurrentSnapshot;
+                ITextSnapshotLine line = snapshot.GetLineFromLineNumber(Math.Min(caretLine, snapshot.LineCount - 1));
+                view.Caret.MoveTo(new SnapshotPoint(snapshot, line.Start.Position + Math.Min(caretColumn, line.Length)));
+            }
+        }
+
+        private static ITextUndoHistory GetUndoHistory(ITextBuffer buffer)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var componentModel = (IComponentModel)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(SComponentModel));
+            ITextUndoHistoryRegistry registry = componentModel?.GetService<ITextUndoHistoryRegistry>();
+            return registry is not null && registry.TryGetHistory(buffer, out ITextUndoHistory history) ? history : null;
+        }
+
+        // Monikers of the documents being formatted. Formatting saves the
+        // document, which raises the save event again; that event is ignored.
+        // Other documents saved at the same time (Save All) are still
+        // formatted. Only touched on the UI thread.
+        private static readonly HashSet<string> Formatting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Subscribes the format-on-save hook. Must be called on the UI thread
         // during package initialization.
@@ -191,18 +602,33 @@ namespace format
             Log.Info("Document save handler subscribed");
         }
 
+        // Set while Format Solution saves what it formatted, so those saves
+        // are not formatted again one by one. Only touched on the UI thread.
+        internal static bool SuppressOnSave;
+
         private static readonly ToolkitThreadHelper _toolkitThreadHelper = ToolkitThreadHelper.Create();
 
         private static void OnDocumentSaved(string moniker)
         {
+            // Projects, solutions and other files are saved all the time;
+            // ignore them before touching the automation model.
+            if (SuppressOnSave || !IsSupported(moniker) || Formatting.Contains(moniker))
+            {
+                return;
+            }
+
+            if (!General.Instance.FormatOnSave)
+            {
+                return;
+            }
+
             Log.Info($"Document saved: {moniker}");
             _toolkitThreadHelper.JoinableTaskFactory.RunAsync(async () =>
             {
                 try
                 {
                     await _toolkitThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(_toolkitThreadHelper.DisposalToken);
-                    await GuardAsync(() => FormatSavedDocumentAsync(moniker));
-                    Log.Info($"Format-on-save finished: {moniker}");
+                    await GuardAsync(moniker, () => FormatSavedDocumentAsync(moniker));
                 }
                 catch (Exception ex)
                 {
@@ -211,17 +637,8 @@ namespace format
             }).FireAndForget();
         }
 
-        // Formats a document that was just saved. TwinCAT PLC objects are
-        // formatted through the automation interface; other supported files
-        // are formatted on disk and reloaded in the editor.
         private static async Task FormatSavedDocumentAsync(string moniker)
         {
-            if (string.IsNullOrEmpty(moniker))
-            {
-                Log.Warning("Format-on-save skipped: empty moniker");
-                return;
-            }
-
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
 
             string executable = FindExecutable();
@@ -231,196 +648,22 @@ namespace format
                 return;
             }
 
-            DTE dte = GetDTE();
-            if (dte is null)
-            {
-                Log.Warning("Format-on-save skipped: DTE unavailable");
-                return;
-            }
-
-            object automation = GetAutomationObject(dte, moniker);
-            ITcPlcDeclaration declaration = automation as ITcPlcDeclaration;
-            ITcPlcImplementation implementation = automation as ITcPlcImplementation;
-            if (declaration is not null || implementation is not null)
-            {
-                Log.Info($"Format-on-save: TwinCAT PLC object {moniker}");
-                await FormatPlcObjectAsync(executable, dte, declaration, implementation);
-                return;
-            }
-
-            if (!IsSupported(moniker) || !File.Exists(moniker))
-            {
-                Log.Info($"Format-on-save skipped: {moniker}");
-                return;
-            }
-
-            await FormatFileAsync(executable, moniker);
+            await FormatDocumentAsync(executable, moniker, interactive: false);
         }
 
-        // Formats a supported file on disk and refreshes the open text document
-        // when the content changed. The file is only reloaded when stformat
-        // actually modified it, so a no-op save does not disturb the editor.
-        private static async Task FormatFileAsync(string executable, string filePath)
-        {
-            string before = File.ReadAllText(filePath);
-
-            (int exitCode, _) = await RunAsync(executable, filePath);
-            if (exitCode != 0)
-            {
-                Log.Error($"stformat exited with code {exitCode} for {filePath}");
-                return;
-            }
-
-            string after = File.ReadAllText(filePath);
-            if (before == after)
-            {
-                Log.Info($"No formatting changes for {filePath}");
-                return;
-            }
-
-            Log.Info($"File formatted on disk: {filePath}");
-            DocumentView view = await VS.Documents.GetActiveDocumentViewAsync();
-            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-            if (view?.Document is not null && IsSamePath(view.FilePath, filePath))
-            {
-                view.Document.Reload();
-            }
-        }
-
-        // Finds the automation object (if any) of an open document by its
-        // moniker. TwinCAT method documents carry a "@method" suffix in the
-        // moniker, which is why the document is matched instead of the file.
-        private static object GetAutomationObject(DTE dte, string moniker)
-        {
-            ThreadHelper.ThrowIfNotOnUIThread();
-
-            try
-            {
-                foreach (Document document in dte.Documents)
-                {
-                    if (!IsSamePath(document.FullName, moniker))
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        return document.ProjectItem?.Object;
-                    }
-                    catch (Exception)
-                    {
-                        return null;
-                    }
-                }
-            }
-            catch (Exception)
-            {
-                // Fall through to null.
-            }
-
-            return null;
-        }
-
-        private static async Task GuardAsync(Func<Task> action)
-        {
-            if (_formatting)
-            {
-                return;
-            }
-
-            _formatting = true;
-            try
-            {
-                await action();
-            }
-            finally
-            {
-                _formatting = false;
-            }
-        }
-
-        // Formats a piece of ST text by writing it to a temporary file and
-        // running stformat on it. Returns null and reports the error when
-        // stformat fails.
-        private static async Task<string> FormatTextAsync(string executable, string text)
-        {
-            if (string.IsNullOrEmpty(text))
-            {
-                return text;
-            }
-
-            string temporary = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".st");
-            try
-            {
-                File.WriteAllText(temporary, text, new UTF8Encoding(false));
-
-                int exitCode;
-                string output;
-                try
-                {
-                    (exitCode, output) = await RunAsync(executable, temporary);
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"Failed to run stformat on temporary file: {ex}");
-                    await VS.MessageBox.ShowErrorAsync("Format", $"Failed to run stformat: {ex.Message}");
-                    return null;
-                }
-
-                if (exitCode != 0)
-                {
-                    string message = string.IsNullOrEmpty(output)
-                        ? "stformat exited with a non-zero exit code."
-                        : output;
-                    Log.Error($"stformat exited with code {exitCode}");
-                    await VS.MessageBox.ShowErrorAsync("Format", $"stformat failed:{Environment.NewLine}{message}");
-                    return null;
-                }
-
-                return File.ReadAllText(temporary, Encoding.UTF8);
-            }
-            finally
-            {
-                try
-                {
-                    File.Delete(temporary);
-                }
-                catch (IOException)
-                {
-                    // Ignore leftover temporary files.
-                }
-            }
-        }
-
-        // Refreshes a document hosted by a custom editor by closing and
-        // reopening its window frame, keeping the file open.
-        private static async Task ReloadDocumentAsync(string filePath)
-        {
-            WindowFrame frame = await VS.Windows.FindDocumentWindowAsync(filePath);
-            if (frame is not null)
-            {
-                await frame.CloseFrameAsync(FrameCloseOption.NoSave);
-            }
-
-            await VS.Documents.OpenViaProjectAsync(filePath);
-        }
-
-        private static DTE GetDTE()
-        {
-            ThreadHelper.ThrowIfNotOnUIThread();
-            return (DTE)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(DTE));
-        }
-
-        // Tries to obtain the TwinCAT automation object for the active
-        // document. Returns true when the active document is a PLC object
-        // (POU, GVL, DUT or interface) that can be formatted in place.
+        // Finds the automation object of an open document by its moniker.
+        // TwinCAT method documents carry a suffix in the moniker, which is why
+        // the document is matched instead of the file.
         private static bool TryGetPlcObject(
             DTE dte,
+            string moniker,
+            out Document document,
             out ITcPlcDeclaration declaration,
             out ITcPlcImplementation implementation)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
+            document = null;
             declaration = null;
             implementation = null;
 
@@ -429,17 +672,92 @@ namespace format
                 return false;
             }
 
-            object automation;
             try
             {
-                automation = dte.ActiveWindow?.ProjectItem?.Object;
+                foreach (Document candidate in dte.Documents)
+                {
+                    if (!IsSamePath(candidate.FullName, moniker))
+                    {
+                        continue;
+                    }
+
+                    document = candidate;
+                    return TryGetPlcInterfaces(
+                        () =>
+                        {
+                            ThreadHelper.ThrowIfNotOnUIThread();
+                            return candidate.ProjectItem?.Object;
+                        },
+                        out declaration,
+                        out implementation);
+                }
             }
             catch (Exception)
+            {
+                // Fall through; not a PLC object.
+            }
+
+            return false;
+        }
+
+        // Tries to obtain the TwinCAT automation object for the active
+        // window. Returns true when it is a PLC object (POU, GVL, DUT or
+        // interface) that can be formatted in place.
+        private static bool TryGetActivePlcObject(
+            DTE dte,
+            out Document document,
+            out ITcPlcDeclaration declaration,
+            out ITcPlcImplementation implementation)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            document = null;
+            declaration = null;
+            implementation = null;
+
+            if (dte is null)
             {
                 return false;
             }
 
-            if (automation is null)
+            if (!TryGetPlcInterfaces(
+                () =>
+                {
+                    ThreadHelper.ThrowIfNotOnUIThread();
+                    return dte.ActiveWindow?.ProjectItem?.Object;
+                },
+                out declaration,
+                out implementation))
+            {
+                return false;
+            }
+
+            try
+            {
+                document = dte.ActiveWindow?.Document ?? dte.ActiveDocument;
+            }
+            catch (Exception)
+            {
+                // Formatting still works; only saving afterwards is skipped.
+            }
+
+            return true;
+        }
+
+        private static bool TryGetPlcInterfaces(
+            Func<object> getAutomation,
+            out ITcPlcDeclaration declaration,
+            out ITcPlcImplementation implementation)
+        {
+            declaration = null;
+            implementation = null;
+
+            object automation;
+            try
+            {
+                automation = getAutomation();
+            }
+            catch (Exception)
             {
                 return false;
             }
@@ -449,7 +767,204 @@ namespace format
             return declaration is not null || implementation is not null;
         }
 
-        private static bool IsStructuredText(ITcPlcImplementation implementation)
+        // Runs action unless the document is already being formatted. Callers
+        // are on the UI thread, so the switch completes synchronously and the
+        // document is marked before the save event of its own save arrives.
+        private static async Task GuardAsync(string moniker, Func<Task> action)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            string key = moniker ?? string.Empty;
+            if (!Formatting.Add(key))
+            {
+                return;
+            }
+
+            try
+            {
+                await action();
+            }
+            finally
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                Formatting.Remove(key);
+            }
+        }
+
+        // Formats a piece of ST text through stformat's standard input.
+        // Returns null and reports the error when stformat fails.
+        private static async Task<string> FormatTextAsync(string executable, string text, string name, bool interactive)
+        {
+            (string formatted, string error) = await TryFormatTextAsync(executable, text, name);
+            if (error is not null)
+            {
+                await ReportAsync(name, error, interactive);
+            }
+
+            return formatted;
+        }
+
+        // Formats a piece of ST text through stformat's standard input and
+        // returns either the result or the error. Safe to call from any thread.
+        internal static async Task<(string Text, string Error)> TryFormatTextAsync(string executable, string text, string name)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return (text, null);
+            }
+
+            var utf8 = new UTF8Encoding(false);
+            (byte[] output, string error) = await TryRunAsync(executable, "-q -stdin", utf8.GetBytes(text), name);
+            return output is null ? (null, error) : (utf8.GetString(output), null);
+        }
+
+        // Runs stformat and returns its standard output. Returns null and
+        // reports the error when it cannot be run or fails.
+        private static async Task<byte[]> RunAsync(string executable, string arguments, byte[] input, string name, bool interactive)
+        {
+            (byte[] output, string error) = await TryRunAsync(executable, arguments, input, name);
+            if (error is not null)
+            {
+                await ReportAsync(name, error, interactive);
+            }
+
+            return output;
+        }
+
+        // Runs stformat and returns its standard output, or the error when it
+        // cannot be run or fails. Safe to call from any thread.
+        internal static async Task<(byte[] Output, string Error)> TryRunAsync(string executable, string arguments, byte[] input, string name)
+        {
+            string error;
+            try
+            {
+                (int exitCode, byte[] output, string stderr) = await Task.Run(() => RunProcessAsync(executable, arguments, input));
+                string shown = arguments.Length > 200 ? arguments.Substring(0, 200) + "..." : arguments;
+                Log.Info($"Ran stformat {shown} for {name} (exit {exitCode})");
+                if (exitCode == 0)
+                {
+                    return (output, null);
+                }
+
+                error = string.IsNullOrEmpty(stderr) ? $"stformat exited with code {exitCode}." : stderr;
+            }
+            catch (Exception ex)
+            {
+                error = $"Failed to run stformat: {ex.Message}";
+            }
+
+            Log.Error($"{name}: {error}");
+            return (null, error);
+        }
+
+        // Only an explicit command shows a message box; format-on-save uses
+        // the status bar so a save is never interrupted by a dialog.
+        private static async Task ReportAsync(string name, string error, bool interactive)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            if (interactive)
+            {
+                await VS.MessageBox.ShowErrorAsync("Format", $"Could not format {name}:{Environment.NewLine}{error}");
+            }
+            else
+            {
+                string firstLine = error.Split('\n')[0].Trim();
+                await VS.StatusBar.ShowMessageAsync($"StFormat: {name} not formatted: {firstLine}");
+            }
+        }
+
+        private static async Task<(int ExitCode, byte[] Output, string Error)> RunProcessAsync(string executable, string arguments, byte[] input)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = input is not null,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+
+            using (var process = new System.Diagnostics.Process { StartInfo = startInfo })
+            {
+                process.Start();
+
+                // Both pipes are drained while the input is written, so a large
+                // file cannot fill a pipe and deadlock the two processes.
+                Task<byte[]> stdout = Task.Run(() =>
+                {
+                    using (var buffer = new MemoryStream())
+                    {
+                        process.StandardOutput.BaseStream.CopyTo(buffer);
+                        return buffer.ToArray();
+                    }
+                });
+                Task<string> stderr = process.StandardError.ReadToEndAsync();
+
+                if (input is not null)
+                {
+                    try
+                    {
+                        using (Stream stdin = process.StandardInput.BaseStream)
+                        {
+                            await stdin.WriteAsync(input, 0, input.Length);
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // stformat exited early; its exit code and stderr say why.
+                    }
+                }
+
+                if (!process.WaitForExit(TimeoutMilliseconds))
+                {
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Exited in the meantime.
+                    }
+
+                    throw new TimeoutException($"stformat did not finish within {TimeoutMilliseconds / 1000} seconds.");
+                }
+
+                return (process.ExitCode, await stdout, (await stderr).Trim());
+            }
+        }
+
+        // Decodes a file's bytes with the encoding the editor uses for it,
+        // without the byte order mark, which the buffer does not hold.
+        private static string Decode(byte[] bytes, Encoding encoding)
+        {
+            byte[] preamble = encoding.GetPreamble();
+            int offset = 0;
+            if (preamble.Length > 0 && bytes.Length >= preamble.Length)
+            {
+                offset = preamble.Length;
+                for (int i = 0; i < preamble.Length; i++)
+                {
+                    if (bytes[i] != preamble[i])
+                    {
+                        offset = 0;
+                        break;
+                    }
+                }
+            }
+
+            return encoding.GetString(bytes, offset, bytes.Length - offset);
+        }
+
+        internal static DTE GetDTE()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            return (DTE)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(DTE));
+        }
+
+        internal static bool IsStructuredText(ITcPlcImplementation implementation)
         {
             try
             {
@@ -461,12 +976,12 @@ namespace format
             }
         }
 
-        private static void TrySave(DTE dte)
+        private static void TrySave(Document document)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             try
             {
-                dte.ActiveDocument?.Save("");
+                document?.Save("");
             }
             catch (Exception)
             {
@@ -475,7 +990,8 @@ namespace format
         }
 
         // Compares two pieces of ST text ignoring line ending style and
-        // trailing newlines.
+        // leading and trailing line breaks, so text the editor normalises on
+        // assignment is not set, and saved, again on every save.
         private static bool Differs(string left, string right)
         {
             return Normalize(left) != Normalize(right);
@@ -483,16 +999,24 @@ namespace format
 
         // The file based formatter stores the declaration and implementation
         // content with a single leading and trailing line break inside the
-        // CDATA section. Reproduce that so the automation path produces the
-        // same output.
-        private static string WrapText(string formatted)
+        // CDATA section, in the line ending of the block. Reproduce that so
+        // the automation path produces the same output and never mixes line
+        // endings.
+        private static string WrapText(string formatted, string original)
         {
-            return "\n" + formatted.Trim('\r', '\n') + "\n";
+            string ending = original is not null && original.Contains("\n") && !original.Contains("\r\n") ? "\n" : "\r\n";
+            string body = formatted.Trim('\r', '\n').Replace("\r\n", "\n");
+            if (ending != "\n")
+            {
+                body = body.Replace("\n", ending);
+            }
+
+            return ending + body + ending;
         }
 
         private static string Normalize(string text)
         {
-            return text?.Replace("\r\n", "\n").TrimEnd('\n');
+            return text?.Replace("\r\n", "\n").Trim('\n');
         }
 
         // Picks the first candidate that is a supported file. Custom editors may
@@ -518,15 +1042,32 @@ namespace format
             return baseName is null ? null : FindRunningDocument(baseName);
         }
 
-        private static bool IsSupported(string path)
+        // Reports whether a file, or the PLC object a TwinCAT moniker points
+        // into, has a supported extension.
+        internal static bool IsSupported(string moniker)
         {
-            if (string.IsNullOrEmpty(path))
+            return !string.IsNullOrEmpty(moniker) && ObjectMoniker.IsMatch(moniker);
+        }
+
+        // A short name for messages: "MAIN.TcPOU" or "MAIN.TcPOU (doExecute)".
+        internal static string DisplayName(string moniker)
+        {
+            Match match = ObjectMoniker.Match(moniker ?? string.Empty);
+            if (!match.Success)
             {
-                return false;
+                return moniker;
             }
 
-            string extension = Path.GetExtension(path).ToLowerInvariant();
-            return Array.IndexOf(SupportedExtensions, extension) >= 0;
+            string file = match.Groups[1].Value;
+            int separator = file.LastIndexOfAny(new[] { '\\', '/' });
+            string name = file.Substring(separator + 1);
+            if (moniker.Length == file.Length)
+            {
+                return name;
+            }
+
+            string part = moniker.Substring(file.Length + 1);
+            return $"{name} ({part.Substring(part.LastIndexOfAny(new[] { '\\', '/' }) + 1)})";
         }
 
         private static bool IsSamePath(string left, string right)
@@ -603,7 +1144,7 @@ namespace format
             return path as string;
         }
 
-        private static string FindExecutable()
+        internal static string FindExecutable()
         {
             string assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty;
 
@@ -632,7 +1173,17 @@ namespace format
                     continue;
                 }
 
-                string candidate = Path.Combine(directory.Trim().Trim('"'), "stformat.exe");
+                string candidate;
+                try
+                {
+                    candidate = Path.Combine(directory.Trim().Trim('"'), "stformat.exe");
+                }
+                catch (ArgumentException)
+                {
+                    // Invalid characters in a PATH entry.
+                    continue;
+                }
+
                 if (File.Exists(candidate))
                 {
                     return candidate;
@@ -640,42 +1191,6 @@ namespace format
             }
 
             return null;
-        }
-
-        private static async Task<(int ExitCode, string Output)> RunAsync(string executable, string filePath)
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                Arguments = $"-q \"{filePath}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-
-            string directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                startInfo.WorkingDirectory = directory;
-            }
-
-            using (var process = new System.Diagnostics.Process { StartInfo = startInfo })
-            {
-                process.Start();
-
-                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-                Task<string> stderr = process.StandardError.ReadToEndAsync();
-                await Task.Run(() => process.WaitForExit());
-
-                string output = string.Join(Environment.NewLine, new[] { await stdout, await stderr });
-                Log.Info($"Ran stformat on {Path.GetFileName(filePath)} (exit {process.ExitCode})");
-                if (!string.IsNullOrWhiteSpace(output))
-                {
-                    Log.Info($"stformat output: {output.Trim()}");
-                }
-                return (process.ExitCode, output.Trim());
-            }
         }
     }
 }

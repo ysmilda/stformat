@@ -5,11 +5,17 @@ on:
     branches: [main]
     paths:
       - 'extension/**'
+      - '**/*.go'
+      - go.mod
+      - go.sum
       - .github/workflows/extension.yml
   pull_request:
     branches: [main]
     paths:
       - 'extension/**'
+      - '**/*.go'
+      - go.mod
+      - go.sum
       - .github/workflows/extension.yml
 
 permissions:
@@ -30,25 +36,15 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v3
 
-      - name: Restore VSIX project
-        run: >
-          msbuild extension\format\format.csproj
-          /t:Restore
-          /p:Configuration=Release
-          /p:Platform=AnyCPU
-
-      - name: Build VSIX
-        run: >
-          msbuild extension\format\format.csproj
-          /t:Build
-          /p:Configuration=Release
-          /p:Platform=AnyCPU
-          /p:ReferencePath="$env:GITHUB_WORKSPACE\extension\format\References"
-          /p:DeployExtension=false
-          /p:BuildVSIXContainer=true
-          /v:m
-
-      - name: Stage VSIX artifact
+      # format: Visual Studio 2022+ and the 64-bit TwinCAT XAE Shell (4026).
+      # format15: Visual Studio 2017/2019 and the 32-bit XAE Shell (4024).
+      - name: Build VSIXs
         run: |
-          $vsix = 'extension\format\bin\Release\format.vsix'
-          if (-not (Test-Path $vsix)) { throw "VSIX not produced: $vsix" }
+          foreach ($project in 'format', 'format15') {
+            msbuild "extension\$project\$project.csproj" /t:Restore /p:Configuration=Release /p:Platform=AnyCPU
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            msbuild "extension\$project\$project.csproj" /t:Build /p:Configuration=Release /p:Platform=AnyCPU /p:DeployExtension=false /p:BuildVSIXContainer=true /v:m
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $vsix = "extension\$project\bin\Release\format.vsix"
+            if (-not (Test-Path $vsix)) { throw "VSIX not produced: $vsix" }
+          }

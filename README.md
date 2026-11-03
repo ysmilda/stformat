@@ -79,6 +79,54 @@ Supported formats:
 | Go (source)         | `go install github.com/ysmilda/stformat@latest`                |
 | Release binary      | archives + checksums on the [releases] page                    |
 
+### Visual Studio and TwinCAT XAE
+
+Each release carries two builds of the extension:
+
+| File                             | For                                                          |
+| -------------------------------- | ------------------------------------------------------------ |
+| `stformat-<version>.vsix`        | Visual Studio 2022 and later, 64-bit XAE Shell (TwinCAT 4026) |
+| `stformat-<version>-vs2017.vsix` | Visual Studio 2017/2019, 32-bit XAE Shell (TwinCAT 4024)      |
+
+Open the `.vsix` to install it into Visual Studio. The VSIX installer does not
+recognise the XAE Shell, so extract the matching file into the shell's
+extensions folder from an elevated PowerShell and restart the shell:
+
+```powershell
+$shell = 'C:\Program Files (x86)\Beckhoff\TcXaeShell'   # 4024; 'C:\Program Files\Beckhoff\TcXaeShell' for 4026
+$vsix  = 'stformat-<version>-vs2017.vsix'               # stformat-<version>.vsix for 4026
+$ext   = "$shell\Common7\IDE\Extensions"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+if (Test-Path "$ext\StFormat") { Remove-Item "$ext\StFormat" -Recurse -Force }
+[IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path $vsix), "$ext\StFormat")
+(Get-Item "$ext\extensions.configurationchanged").LastWriteTime = Get-Date
+```
+
+The extension adds:
+
+- **Format Structured Text** (Tools menu and the code editor's context menu):
+  formats the active document.
+- **Format Solution** (Tools menu and the solution's context menu in Solution
+  Explorer): formats every supported file of the solution on disk, including
+  all files of the TwinCAT PLC projects. For a TwinCAT solution it asks first,
+  saves everything, closes the solution while the files are formatted and
+  opens it again, because TwinCAT holds the PLC project in memory.
+- Format on save, which can be turned off under **Tools > Options > StFormat**.
+
+TwinCAT POUs, GVLs, DUTs and interfaces are formatted through the TwinCAT
+automation interface, so the open editor is updated in place without a
+"modified outside the editor" prompt. Other files are formatted in their text
+editor buffer.
+
+Undo (Ctrl+Z) reverts formatting in one step in Visual Studio text editors,
+such as plain `.st` files. It does **not** undo formatting in TwinCAT editors:
+TwinCAT does not record changes made through its automation interface in its
+undo history, and undoing there can leave the editor showing text that no
+longer matches the object. Format Solution cannot be undone either. Use source
+control to revert formatting.
+
+Problems are logged to `%LOCALAPPDATA%\StFormat\stformat.log`.
+
 ## Usage
 
 ```bash

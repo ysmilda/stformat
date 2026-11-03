@@ -47,7 +47,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Commands\Format.cs" />
+    <Compile Include="Commands\FormatSolution.cs" />
     <Compile Include="Log.cs" />
+    <Compile Include="TextViewTracker.cs" />
+    <Compile Include="Options\General.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="formatPackage.cs" />
     <Compile Include="source.extension.cs">
@@ -87,8 +90,11 @@
     <Reference Include="System" />
     <Reference Include="System.Design" />
     <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
     <Reference Include="EnvDTE" />
     <Reference Include="TCatSysManagerLib">
+      <HintPath>References\TCatSysManagerLib.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
       <SpecificVersion>False</SpecificVersion>
     </Reference>
@@ -97,8 +103,11 @@
     <PackageReference Include="Community.VisualStudio.VSCT" Version="16.0.29.13" PrivateAssets="all" />
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.549" ExcludeAssets="Runtime" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.14.2120" />
-    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="Runtime" />
-    <PackageReference Include="EnvDTE" Version="17.14.40260" ExcludeAssets="Runtime" />
+    <!-- Compile against the lowest 17.x SDK: newer hosts redirect these
+         references upward, older ones (the 4026 XAE Shell is 17.10) cannot
+         load a newer reference. -->
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.0.32112.339" ExcludeAssets="Runtime" />
+    <PackageReference Include="EnvDTE" Version="17.0.32112.339" ExcludeAssets="Runtime" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
