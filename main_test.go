@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestUnifiedDiff checks the -diff output: a unified diff that patch and git
+// TestUnifiedDiff checks the --diff output: a unified diff that patch and git
 // apply read, aligned so that an inserted line does not shift the rest.
 func TestUnifiedDiff(t *testing.T) {
 	t.Parallel()

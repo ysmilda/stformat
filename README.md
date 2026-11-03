@@ -55,7 +55,7 @@ END_VAR
 
 ### From a stream
 
-`stformat -stdin < file.st` honours the directives like a file does. For code that embeds the formatter, `formatter.Copy(dst, src)` formats any `io.Reader` into any `io.Writer`:
+`stformat --stdin < file.st` honours the directives like a file does. For code that embeds the formatter, `formatter.Copy(dst, src)` formats any `io.Reader` into any `io.Writer`:
 
 ```go
 n, err := formatter.Copy(os.Stdout, os.Stdin)
@@ -131,21 +131,23 @@ Problems are logged to `%LOCALAPPDATA%\StFormat\stformat.log`.
 
 ```bash
 stformat .                  # format files in place
-stformat -check .           # exit 1 if any file needs formatting
-stformat -diff file.st      # show what would change as a unified diff, without writing
-stformat -stdin < file.st   # read ST from stdin
+stformat --check .          # exit 1 if any file needs formatting
+stformat --diff file.st     # show what would change as a unified diff, without writing
+stformat --stdin < file.st  # read ST from stdin
 ```
 
-| Flag       | Default | Description                                  |
-| ---------- | ------- | -------------------------------------------- |
-| `-check`   | `false` | List every file that is not formatted and exit 1; combine with `-diff` to see the changes |
-| `-diff`    | `false` | Print a unified diff for unformatted files instead of writing them; `git apply` and `patch -p1` read it |
-| `-exclude` |         | Skip files and directories whose name matches this pattern while walking a directory; repeatable (`-exclude '*_old.st' -exclude Generated`) |
-| `-w`       | `true`  | Write formatted output back to the files; `-w=false` prints every file instead |
-| `-stdin`   | `false` | Read ST from stdin and write the result to stdout |
-| `-stdout`  | `false` | Print every file, formatted or not, instead of writing it |
-| `-q`       | `false` | Suppress informational output                |
-| `-version` | `false` | Print version, commit and build date         |
+| Flag            | Default | Description                                  |
+| --------------- | ------- | -------------------------------------------- |
+| `--check`       | `false` | List every file that is not formatted and exit 1; combine with `--diff` to see the changes |
+| `--diff`        | `false` | Print a unified diff for unformatted files instead of writing them; `git apply` and `patch -p1` read it |
+| `--exclude`     |         | Skip files and directories whose name matches this pattern while walking a directory; repeatable (`--exclude '*_old.st' --exclude Generated`) |
+| `-w`, `--write` | `true`  | Write formatted output back to the files; `--write=false` prints every file instead |
+| `--stdin`       | `false` | Read ST from stdin and write the result to stdout |
+| `--stdout`      | `false` | Print every file, formatted or not, instead of writing it |
+| `-q`, `--quiet` | `false` | Suppress informational output                |
+| `-v`, `--version` | `false` | Print version, commit and build date       |
+
+Flags follow the GNU convention: long flags take two dashes (`--check`), and the one-letter forms one (`-q`). `stformat completion <shell>` prints a shell completion script.
 
 All files are formatted before any is written: if one file cannot be formatted (for example malformed XML, or an `IF` without `END_IF`), nothing is written and the error names the file and line.
 
@@ -153,6 +155,6 @@ When walking a directory, hidden entries (`.git`, ...) and generated directories
 
 | Exit code | Meaning |
 | --------- | ------- |
-| `0`       | Success; with `-check`, every file is formatted |
-| `1`       | `-check` found files that need formatting |
+| `0`       | Success; with `--check`, every file is formatted |
+| `1`       | `--check` found files that need formatting |
 | `2`       | An error: a file could not be read, parsed or formatted, or a flag was wrong |

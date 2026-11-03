@@ -82,7 +82,9 @@ linter `stlint` (a separate, private project checked out next to this one at
 `../stlint`) imports them through a `replace` directive. Changing their exported
 names or behaviour can break it; run `task default` there after such a change.
 
-Entry point is `main.go`: `run(args, stdin, stdout, stderr)` parses flags, expands file paths, formats every file concurrently and only then writes; `cli_test.go` drives it directly. Exit codes: 1 means `-check` found unformatted files, 2 means an error (`exitCode`). Directory walks skip hidden and generated directories and `-exclude` patterns (`skipped`). `diff.go` writes `-diff` as a unified diff.
+The command line is built with Cobra (`github.com/spf13/cobra`, flags from `pflag`): `newRootCmd` in `main.go` defines the flags. Long flags take two dashes (`--check`), one-letter forms one (`-q`, `-w`).
+
+Entry point is `main.go`: `run(args, stdin, stdout, stderr)` executes the Cobra command, which parses flags, expands file paths, formats every file concurrently and only then writes; `cli_test.go` drives it directly. Exit codes: 1 means `--check` found unformatted files, 2 means an error (`exitCode`). Directory walks skip hidden and generated directories and `--exclude` patterns (`skipped`). `diff.go` writes `--diff` as a unified diff.
 
 Formatting is a single token pass (`formatter.go`, no AST) that writes each statement on one line and records which token each piece of the line is. When a line ends, `layout.go` lays it out from those tokens: bracketed lists and operator chains break when the line is over 120 columns (tab = 4) or when the source broke them at one of their break points. The rules, and the policy for user line breaks, are in the comment at the top of `layout.go`. No pass re-reads the output text, so strings, comments, pragmas and ignored regions never need special-casing.
 
