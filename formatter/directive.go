@@ -3,7 +3,7 @@ package formatter
 import (
 	"strings"
 
-	"github.com/ysmilda/stformat/internal/lexer"
+	"github.com/ysmilda/stformat/pkg/lexer"
 )
 
 // Formatting is switched off with a plain comment directive:

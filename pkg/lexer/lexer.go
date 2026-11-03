@@ -1,3 +1,7 @@
+// Package lexer tokenizes IEC 61131-3 Structured Text. It keeps every byte of
+// the input: whitespace is implied by the gaps between token offsets, and
+// comments and pragmas are tokens of their own. It is used by the formatter
+// and by tools built on stformat, such as linters.
 package lexer
 
 import (

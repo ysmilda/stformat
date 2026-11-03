@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ysmilda/stformat/internal/lexer"
+	"github.com/ysmilda/stformat/pkg/lexer"
 )
 
 // blockKind identifies the type of a block on the indentation stack.

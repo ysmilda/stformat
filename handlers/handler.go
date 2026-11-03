@@ -16,6 +16,22 @@ type Handler interface {
 	Extensions() []string
 	// Format formats the given file contents and returns the formatted output.
 	Format(contents []byte) ([]byte, error)
+	// Blocks returns the Structured Text in the given file contents, in file
+	// order.
+	Blocks(contents []byte) ([]Block, error)
+}
+
+// Block is a stretch of Structured Text inside a file: the whole of a plain ST
+// file, or one CDATA section of a TwinCAT XML file.
+type Block struct {
+	// Text is the Structured Text, exactly as it appears in the file.
+	Text string
+	// Offset is the byte offset of Text in the file.
+	Offset int
+
+	// start and end delimit the bytes Format replaces to rewrite the block:
+	// for XML the whole <![CDATA[...]]> section.
+	start, end int
 }
 
 // Registry holds all registered handlers.

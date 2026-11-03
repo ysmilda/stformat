@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ysmilda/stformat/internal/lexer"
+	"github.com/ysmilda/stformat/pkg/lexer"
 )
 
 // Verify reports an error unless after is a reformatting of before: the same
